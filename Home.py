@@ -1,6 +1,5 @@
 """
 Economics Games - Multi-Page Streamlit App
-University of Waikato High School Economics Outreach
 """
 
 import streamlit as st
@@ -14,7 +13,7 @@ from streamlit_javascript import st_javascript
 
 # Page config
 st.set_page_config(
-    page_title="Economics Games - UoW",
+    page_title="Economics Games",
     page_icon="🎮",
     layout="wide",
     initial_sidebar_state="expanded"

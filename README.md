@@ -47,7 +47,7 @@ cd economics_games
 pip install -r requirements.txt
 
 # IMPORTANT: Set admin password (open config.py and change line 13)
-# Default password: "UoW2026"
+# Default password: "ASDF"
 
 # Run the app
 streamlit run Home.py
