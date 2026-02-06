@@ -60,7 +60,7 @@ The app will open at `http://localhost:8501`
 **CRITICAL:** Before using in class, change the admin password!
 
 1. Open `config.py`
-2. Find line 13: `ADMIN_PASSWORD = "UoW2026"`
+2. Find line 13: `ADMIN_PASSWORD = "ASDF"`
 3. Change to your secure password
 4. Save and restart app
 
