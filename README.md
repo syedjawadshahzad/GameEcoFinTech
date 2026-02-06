@@ -1,6 +1,6 @@
-# 🎮 Economics Games 
+# 🎮 Economics, Finance & FinTech Games 
 
-A complete game management system with admin controls, team join codes, and live scoreboards for three engaging economics games.
+A complete game management system with admin controls, team join codes, and live scoreboards for three engaging games.
 
 ---
 
@@ -20,7 +20,7 @@ A complete game management system with admin controls, team join codes, and live
 ## 📁 Project Structure
 
 ```
-economics_games/
+GameEcoFinTech/
 ├── Home.py                 # Main entry point - game selection & join
 ├── shared_state.py         # Data persistence & state management
 ├── requirements.txt        # Python dependencies
