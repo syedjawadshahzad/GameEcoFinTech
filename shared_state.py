@@ -1,6 +1,7 @@
 """
 Shared state management for Economics Games
 Handles data persistence across pages and sessions
+CORRECTED: Fixed admin authentication and session management
 """
 
 import streamlit as st
@@ -101,7 +102,6 @@ def generate_team_codes(join_code: str, num_teams: int) -> dict:
     used_codes = set()
 
     for i in range(1, num_teams + 1):
-        # Generate unique code for each team
         team_code = generate_code()
         while team_code in used_codes or team_code in games:
             team_code = generate_code()
@@ -109,11 +109,10 @@ def generate_team_codes(join_code: str, num_teams: int) -> dict:
         used_codes.add(team_code)
         team_codes[team_code] = {
             "team_slot": i,
-            "team_name": None,  # Will be filled when team joins
+            "team_name": None,
             "assigned": False
         }
 
-    # Store team codes in game session
     games[join_code]["team_codes"] = team_codes
     save_json(GAMES_FILE, games)
 
@@ -124,7 +123,7 @@ def get_game_session(join_code: str) -> Optional[dict]:
     """Get game session by join code"""
     init_data_dir()
     games = load_json(GAMES_FILE)
-    return games.get(join_code)
+    return games.get(join_code.upper() if join_code else "")
 
 
 def update_game_session(join_code: str, updates: dict):
@@ -170,27 +169,22 @@ def add_team_to_game(join_code: str, team_name: str, team_code: str = None, team
 
     game = games[join_code]
 
-    # Check if using team codes system
     if game.get("team_codes"):
         if not team_code:
             return False, "Team code required for this game", None
 
-        # Validate team code
         if team_code not in game["team_codes"]:
             return False, "Invalid team code", None
 
         team_code_info = game["team_codes"][team_code]
 
-        # Check if code already used
         if team_code_info["assigned"]:
             return False, "This team code has already been used", None
 
-        # Assign team to this code
         team_slot = team_code_info["team_slot"]
         team_code_info["team_name"] = team_name
         team_code_info["assigned"] = True
 
-        # Add team to game
         games[join_code]["teams"][team_name] = team_data or {
             "joined_at": datetime.now().isoformat(),
             "ready": False,
@@ -201,7 +195,7 @@ def add_team_to_game(join_code: str, team_name: str, team_code: str = None, team
         save_json(GAMES_FILE, games)
         return True, f"Joined as Team {team_slot}", team_slot
 
-    # Old system - direct join without team codes
+    # Old system
     if team_name in game["teams"]:
         return False, "Team name already taken", None
 
@@ -264,7 +258,7 @@ def check_round_timer(join_code: str) -> tuple[bool, int]:
     now = datetime.now()
 
     if now >= end_time:
-        return True, 0  # Timer expired
+        return True, 0
 
     remaining = int((end_time - now).total_seconds())
     return True, remaining
@@ -284,23 +278,22 @@ def is_round_locked(join_code: str) -> bool:
 def advance_round(join_code: str):
     """
     Advance to next round:
-    1) Process current round outcomes (scoreboard metrics)
-    2) Generate next scenario/event/indicators (player-facing narrative + hints)
-    3) Persist updated state
+    1) process current round outcomes
+    2) generate next scenario/event/indicators + narrative hints
+    3) persist updated state
     """
     game = get_game_session(join_code)
     if not game:
         return
 
-    # 1) Process the current round BEFORE moving on (updates metrics/performance for scoreboard)
+    # Process current round (scoreboard)
     process_current_round(join_code)
 
-    # Reload after processing (since it persisted changes)
+    # Reload after processing
     game = get_game_session(join_code)
     if not game:
         return
 
-    # 2) Generate new scenario/event based on game type
     game.setdefault("game_state", {})
 
     if game["game_type"] == "build_country":
@@ -418,43 +411,53 @@ def advance_round(join_code: str):
             "price_change": round(random.uniform(-20, 20), 2),
         }
 
-        # Player-facing story + hints
+        # --- Student-friendly: store explanation + hint per indicator ---
+        # Sentiment
         if indicators["sentiment"] < 35:
-            mood = "Fear dominates the market. Traders are pessimistic and selling pressure is rising."
-            hint1 = "Hint: reduce risk exposure or wait for stability."
+            sentiment_text = "Fear dominates the market. Traders are pessimistic and selling pressure is rising."
+            sentiment_hint = "Reduce risk: more Stablecoin, less leverage, or wait for stability."
         elif indicators["sentiment"] > 65:
-            mood = "Market optimism is high. Traders believe prices will keep rising."
-            hint1 = "Hint: consider profit-taking or set protection against sudden reversals."
+            sentiment_text = "Optimism is high. Traders believe prices will keep rising."
+            sentiment_hint = "Enjoy gains, but consider taking profits and avoid extreme leverage."
         else:
-            mood = "Market sentiment is mixed. Traders are uncertain and waiting for direction."
-            hint1 = "Hint: diversify and avoid all-in moves."
+            sentiment_text = "Sentiment is mixed. Traders are uncertain and waiting for direction."
+            sentiment_hint = "Diversify across BTC/ETH and keep some Stablecoin."
 
+        # Volume
         if indicators["volume"] > 75:
-            activity = "Trading volume is extremely high, signaling major whales and institutions moving funds."
-            hint2 = "Hint: high volume can mean a breakout or a crash—watch price trend carefully."
+            volume_text = "Trading volume is extremely high — big players may be moving money."
+            volume_hint = "High volume can mean breakout OR crash. Use lower leverage if unsure."
         elif indicators["volume"] < 40:
-            activity = "Trading volume is weak, meaning low conviction and thin liquidity."
-            hint2 = "Hint: avoid large trades—small moves can trigger sharp drops."
+            volume_text = "Trading volume is weak — the market is thin and jumpy."
+            volume_hint = "Thin markets crash easily. Hold more Stablecoin and avoid leverage."
         else:
-            activity = "Trading volume is normal, suggesting steady but cautious activity."
-            hint2 = "Hint: follow trends but remain prepared for volatility."
+            volume_text = "Trading volume is normal — steady but cautious activity."
+            volume_hint = "Follow the trend, but keep protection (some Stablecoin)."
 
+        # Hype
         if indicators["hype"] > 75:
-            hype_text = "Social media hype is exploding. Meme-driven buying is pushing prices irrationally."
-            hint3 = "Hint: hype bubbles often crash—be cautious."
+            hype_text = "Social media hype is exploding. Meme coins can spike — and crash — fast."
+            hype_hint = "Be careful with DOGE + leverage. That combo is highest risk."
         elif indicators["hype"] < 40:
             hype_text = "Hype is low. The market is quiet and attention is fading."
-            hint3 = "Hint: low hype can mean undervaluation, but also weak demand."
+            hype_hint = "Low hype means fewer pumps, but also less buying demand."
         else:
-            hype_text = "Hype is moderate. Speculation exists but hasn’t reached mania levels."
-            hint3 = "Hint: balanced conditions—focus on fundamentals."
+            hype_text = "Hype is moderate. Speculation exists, but it hasn't reached mania levels."
+            hype_hint = "Balanced conditions: focus on BTC/ETH and manage leverage."
 
-        story = f"{mood} {activity} {hype_text} {hint1} {hint2} {hint3}"
+        # Narrative (no hints appended)
+        market_story = f"{sentiment_text} {volume_text} {hype_text}"
 
         game["game_state"]["indicators"] = indicators
-        game["game_state"]["market_story"] = story
+        game["game_state"]["market_story"] = market_story
 
-    # 3) Persist round advance and unlock for next round
+        # ✅ New: structured notes for UI to show per indicator
+        game["game_state"]["indicator_notes"] = {
+            "sentiment": {"text": sentiment_text, "hint": sentiment_hint},
+            "volume": {"text": volume_text, "hint": volume_hint},
+            "hype": {"text": hype_text, "hint": hype_hint},
+        }
+
     update_game_session(join_code, {
         "current_round": game.get("current_round", 0) + 1,
         "round_locked": False,
@@ -502,17 +505,10 @@ def process_current_round(join_code: str):
 
 
 def _process_build_country_round(game: dict):
-    """
-    Explainable toy mechanics:
-    - Infra + education increase GDP and employment
-    - Higher tax reduces inequality but can reduce growth
-    - Climate policy has short-run tradeoff but affects approval
-    Scenario adds a transparent shock.
-    """
+    """Build-country toy mechanics with scenario shock."""
     scenario = game.get("game_state", {}).get("current_scenario", {})
     scenario_name = (scenario.get("name") or "").lower()
 
-    # Scenario shock
     gdp_shock = 0.0
     emp_shock = 0.0
     appr_shock = 0.0
@@ -581,10 +577,7 @@ def _process_build_country_round(game: dict):
 
 
 def _process_beat_market_round(game: dict):
-    """
-    Applies portfolio allocation to returns with an event shock.
-    Writes team_data["portfolio_value"] used by scoreboard.
-    """
+    """Beat-market toy mechanics with event shock."""
     event = game.get("game_state", {}).get("current_event", {})
     event_name = (event.get("name") or "").lower()
 
@@ -626,7 +619,6 @@ def _process_beat_market_round(game: dict):
             cash, shares, crypto, bonds = 25, 25, 25, 25
             total = 100
 
-        # Normalize to 100
         cash, shares, crypto, bonds = [x * 100.0 / total for x in (cash, shares, crypto, bonds)]
 
         prev = team_data.get("portfolio_value", {"value": 1_000_000, "returns": 0.0, "risk": 50.0, "esg": 50.0})
@@ -657,62 +649,192 @@ def _process_beat_market_round(game: dict):
 
 def _process_crypto_crash_round(game: dict):
     """
-    Uses game indicators as the environment. Teams can store a stance decision: Long/Short/Hold.
-    Even if they don't, it still updates a performance object so the scoreboard reacts.
-    """
-    ind = game.get("game_state", {}).get("indicators", {})
-    sentiment = float(ind.get("sentiment", 50))
-    hype = float(ind.get("hype", 50))
-    price_change = float(ind.get("price_change", 0))
+    UPDATED CRYPTO GAME (student-friendly):
+    - 4 assets: BTC, ETH, DOGE, STABLE
+    - Teams choose allocations (%) + leverage (1x..5x)
+    - Uses indicators to generate asset returns each round
+    - Applies leverage + liquidation rule
+    - Updates team_data["crypto_portfolio"] for scoreboard
 
-    market_strength = (0.4 * sentiment + 0.4 * hype + 0.2 * (50 + price_change)) / 100.0
+    Expected team inputs:
+      team_data["decisions"] = {
+        "allocations": {"btc": 40, "eth": 30, "doge": 20, "stable": 10},  # target sum = 100
+        "leverage": 2,  # 1..5
+      }
+    """
+
+    def _normalize_allocations(a: dict) -> dict:
+        keys = ["btc", "eth", "doge", "stable"]
+        cleaned = {k: float(a.get(k, 0.0)) for k in keys}
+        total = sum(cleaned.values())
+
+        # Fallback if missing/broken
+        if total <= 0:
+            cleaned = {"btc": 50.0, "eth": 20.0, "doge": 10.0, "stable": 20.0}
+            total = 100.0
+
+        # Normalize (protects you if UI sends 95 or 105 etc.)
+        for k in cleaned:
+            cleaned[k] = cleaned[k] * 100.0 / total
+
+        return cleaned
+
+    def _compute_market_risk(indicators: dict) -> float:
+        hype = float(indicators.get("hype", 50))
+        sentiment = float(indicators.get("sentiment", 50))
+        volume = float(indicators.get("volume", 60))
+        pc = float(indicators.get("price_change", 0))
+
+        divergence = max(0.0, hype - sentiment)      # hype > sentiment = bubble risk
+        trend_down = max(0.0, -pc)                   # negative day = downside risk
+        thin_liq = max(0.0, 40.0 - volume)           # low volume = jumpy market
+
+        risk = 0.45 * divergence + 0.35 * (trend_down * 3.0) + 0.20 * thin_liq
+        return _clamp(risk, 0.0, 100.0)
+
+    def _asset_returns(indicators: dict) -> dict:
+        sentiment = float(indicators.get("sentiment", 50))
+        hype = float(indicators.get("hype", 50))
+        volume = float(indicators.get("volume", 60))
+        pc = float(indicators.get("price_change", 0))
+
+        s = (sentiment - 50.0) / 50.0
+        h = (hype - 50.0) / 50.0
+        v = (volume - 60.0) / 40.0
+
+        drift = pc * 0.25
+
+        r_btc = drift + (s * 3.0) + (v * 0.8)
+        r_eth = drift + (s * 3.5) + (h * 1.5) + (v * 1.0)
+        r_doge = drift + (h * 7.0) + (s * 1.5) + (v * 1.2)
+        r_stable = random.uniform(-0.05, 0.08)
+
+        return {
+            "btc": _clamp(r_btc, -12.0, 12.0),
+            "eth": _clamp(r_eth, -18.0, 18.0),
+            "doge": _clamp(r_doge, -30.0, 30.0),
+            "stable": _clamp(r_stable, -0.2, 0.2),
+        }
+
+    def _liquidation_threshold(leverage: float) -> float:
+        lev = _clamp(leverage, 1.0, 5.0)
+        mapping = {1.0: 60.0, 2.0: 35.0, 3.0: 22.0, 4.0: 15.0, 5.0: 12.0}
+        return mapping.get(float(int(lev)), 22.0)
+
+    gs = game.setdefault("game_state", {})
+    indicators = gs.get("indicators", {})
+    if not indicators:
+        indicators = {
+            "sentiment": random.randint(20, 80),
+            "volume": random.randint(30, 90),
+            "hype": random.randint(25, 95),
+            "price": round(random.uniform(8000, 15000), 2),
+            "price_change": round(random.uniform(-20, 20), 2),
+        }
+        gs["indicators"] = indicators
+
+    market_risk = _compute_market_risk(indicators)
+    asset_r = _asset_returns(indicators)
+
+    gs["asset_returns"] = asset_r
+    gs["market_risk"] = round(market_risk, 1)
 
     for _, team_data in game.get("teams", {}).items():
-        stance = team_data.get("decisions", {}).get("stance", "Hold")
+        decisions = team_data.get("decisions", {}) if isinstance(team_data.get("decisions", {}), dict) else {}
 
-        prev = team_data.get("performance", {
-            "profit": 0.0,
-            "risk_score": 50.0,
-            "decisions_correct": 0,
-            "total_decisions": 0
+        allocations = _normalize_allocations(
+            decisions.get("allocations", {}) if isinstance(decisions.get("allocations", {}), dict) else {}
+        )
+        leverage = _clamp(float(decisions.get("leverage", 1)), 1.0, 5.0)
+
+        prev = team_data.get("crypto_portfolio", {
+            "equity": 1000.0,
+            "last_return_pct": 0.0,
+            "total_return_pct": 0.0,
+            "risk_exposure": 0.0,
+            "liquidations": 0,
         })
 
-        profit = float(prev.get("profit", 0.0))
-        risk_score = float(prev.get("risk_score", 50.0))
-        correct = int(prev.get("decisions_correct", 0))
-        total = int(prev.get("total_decisions", 0))
+        equity = float(prev.get("equity", 1000.0))
+        total_return = float(prev.get("total_return_pct", 0.0))
+        liquidations = int(prev.get("liquidations", 0))
 
-        total += 1
-        if stance == "Long":
-            delta = (market_strength - 0.5) * 10.0
-            risk_score = _clamp(risk_score + 6.0, 0, 100)
-        elif stance == "Short":
-            delta = (0.5 - market_strength) * 10.0
-            risk_score = _clamp(risk_score + 7.0, 0, 100)
+        unlev_return = (
+            (allocations["btc"] / 100.0) * asset_r["btc"] +
+            (allocations["eth"] / 100.0) * asset_r["eth"] +
+            (allocations["doge"] / 100.0) * asset_r["doge"] +
+            (allocations["stable"] / 100.0) * asset_r["stable"]
+        )
+
+        lev_return = unlev_return * leverage
+
+        risky_fraction = (allocations["btc"] + allocations["eth"] + allocations["doge"]) / 100.0
+        risk_exposure = risky_fraction * (leverage / 5.0) * (market_risk / 100.0) * 100.0
+        risk_exposure = _clamp(risk_exposure, 0.0, 100.0)
+
+        thresh = _liquidation_threshold(leverage)
+        liquidated = False
+
+        if lev_return <= -thresh:
+            liquidated = True
+            liquidations += 1
+            equity *= 0.35
+            lev_return = -thresh
         else:
-            delta = 0.5
-            risk_score = _clamp(risk_score - 2.0, 0, 100)
+            equity *= (1.0 + lev_return / 100.0)
 
-        profit += delta
-        if delta > 0:
-            correct += 1
+        total_return += lev_return
 
-        team_data["performance"] = {
-            "profit": profit,
-            "risk_score": risk_score,
-            "decisions_correct": correct,
-            "total_decisions": total
+        exposure_label = (
+            "Low" if risk_exposure < 25 else
+            "Medium" if risk_exposure < 55 else
+            "High" if risk_exposure < 80 else
+            "Extreme"
+        )
+
+        simple_explain = (
+            f"You invested {int(risky_fraction*100)}% in crypto coins and used {leverage:.0f}x leverage. "
+            f"Market risk is {gs['market_risk']}/100, so your risk exposure is {exposure_label} "
+            f"({risk_exposure:.0f}/100)."
+        )
+
+        if liquidated:
+            outcome_text = (
+                f"🚨 Liquidation! Your leveraged loss hit {thresh:.0f}% or worse in one round, "
+                "so your position was automatically closed with a big penalty. "
+                "Hint: reduce leverage or move more into Stablecoin when risk is high."
+            )
+        else:
+            outcome_text = (
+                f"Round return: {lev_return:+.2f}% (after leverage). "
+                "Hint: if risk is High/Extreme, consider lowering leverage or increasing Stablecoin."
+            )
+
+        team_data["crypto_portfolio"] = {
+            "equity": float(equity),
+            "last_return_pct": float(lev_return),
+            "total_return_pct": float(total_return),
+            "allocations": allocations,
+            "leverage": float(leverage),
+            "risk_exposure": float(risk_exposure),
+            "risk_label": exposure_label,
+            "liquidations": int(liquidations),
+            "explain": simple_explain,
+            "outcome": outcome_text,
         }
 
 
 # ============================================================================
-# USER SESSION MANAGEMENT
+# USER SESSION MANAGEMENT - ✅ FIXED
 # ============================================================================
 
 def init_user_session():
-    """Initialize user session state"""
+    """
+    Initialize user session state.
+    ✅ FIXED: Only sets defaults if keys don't exist (prevents clearing admin status)
+    """
     if "user_type" not in st.session_state:
-        st.session_state.user_type = None  # 'admin' or 'team'
+        st.session_state.user_type = None
 
     if "join_code" not in st.session_state:
         st.session_state.join_code = None
@@ -725,17 +847,22 @@ def init_user_session():
 
 
 def set_user_as_admin(admin_name: str, join_code: str):
-    """Set current user as admin"""
+    """
+    Set current user as admin.
+    ✅ FIXED: Properly sets all required session state variables
+    """
     st.session_state.user_type = "admin"
     st.session_state.admin_name = admin_name
-    st.session_state.join_code = join_code
+    st.session_state.join_code = join_code.upper()
+    st.session_state.team_name = None  # Admin is not a team
 
 
 def set_user_as_team(team_name: str, join_code: str):
     """Set current user as team"""
     st.session_state.user_type = "team"
     st.session_state.team_name = team_name
-    st.session_state.join_code = join_code
+    st.session_state.join_code = join_code.upper()
+    st.session_state.admin_name = None  # Team is not admin
 
 
 def clear_user_session():
@@ -747,7 +874,10 @@ def clear_user_session():
 
 
 def is_admin() -> bool:
-    """Check if current user is admin"""
+    """
+    Check if current user is admin.
+    ✅ FIXED: Ensures boolean return and proper comparison
+    """
     return st.session_state.get("user_type") == "admin"
 
 

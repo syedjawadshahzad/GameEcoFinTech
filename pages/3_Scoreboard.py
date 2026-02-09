@@ -24,9 +24,7 @@ st_autorefresh(interval=3000, key="scoreboard_refresh")
 # Custom CSS
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Poppins:wght@600;700&display=swap');
-
-    .main {
+    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Poppins:wght@600;700&display=swap');.main {
         background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
     }
 
@@ -34,58 +32,42 @@ st.markdown("""
         font-family: 'Orbitron', sans-serif;
         color: #00ff88;
         text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
-    }
-
-    .scoreboard-card {
+    }.scoreboard-card {
         background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
         border: 2px solid #00ff88;
         border-radius: 16px;
         padding: 25px;
         margin: 15px 0;
         box-shadow: 0 0 20px rgba(0, 255, 136, 0.2);
-    }
-
-    .rank-1 {
+    }.rank-1 {
         background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
         border: 3px solid #ffd700;
         box-shadow: 0 0 30px rgba(255, 215, 0, 0.5);
-    }
-
-    .rank-2 {
+    }.rank-2 {
         background: linear-gradient(135deg, #c0c0c0 0%, #e8e8e8 100%);
         border: 3px solid #c0c0c0;
         box-shadow: 0 0 20px rgba(192, 192, 192, 0.3);
-    }
-
-    .rank-3 {
+    }.rank-3 {
         background: linear-gradient(135deg, #cd7f32 0%, #e9a76a 100%);
         border: 3px solid #cd7f32;
         box-shadow: 0 0 20px rgba(205, 127, 50, 0.3);
-    }
-
-    .metric-display {
+    }.metric-display {
         text-align: center;
         padding: 15px;
         background: rgba(0, 255, 136, 0.1);
         border-radius: 12px;
         margin: 10px 0;
-    }
-
-    .metric-value {
+    }.metric-value {
         font-size: 32px;
         font-weight: bold;
         font-family: 'Orbitron', sans-serif;
         color: #00ff88;
-    }
-
-    .metric-label {
+    }.metric-label {
         font-size: 14px;
         color: #aaa;
         text-transform: uppercase;
         letter-spacing: 1px;
-    }
-
-    .team-name-display {
+    }.team-name-display {
         font-size: 36px;
         font-weight: bold;
         font-family: 'Orbitron', sans-serif;
@@ -303,7 +285,12 @@ def show_beat_market_scoreboard(game):
 
         st.markdown("<br>", unsafe_allow_html=True)
 
+
 def show_crypto_crash_scoreboard(game):
+    """
+    ✅ FIXED: Now uses crypto_portfolio (equity-based ranking)
+    Matches the new crypto game logic from shared_state.py
+    """
     if not game.get("teams"):
         st.info("⏳ Waiting for teams to join...")
         return
@@ -319,30 +306,31 @@ def show_crypto_crash_scoreboard(game):
             waiting_teams.append(team_name)
             continue
 
-        performance = team_data.get("performance", {
-            "profit": 0.0,
-            "risk_score": 50.0,
-            "decisions_correct": 0,
-            "total_decisions": 1
+        # ✅ FIXED: Use crypto_portfolio instead of performance
+        cp = team_data.get("crypto_portfolio", {
+            "equity": 1000.0,
+            "total_return_pct": 0.0,
+            "risk_exposure": 0.0,
+            "risk_label": "Low",
+            "liquidations": 0,
+            "leverage": 1
         })
 
-        profit = float(performance.get("profit", 0.0))
-        risk_score = float(performance.get("risk_score", 50.0))
-        correct = int(performance.get("decisions_correct", 0))
-        total = int(performance.get("total_decisions", 1)) or 1
-
-        risk_bonus = (100.0 - risk_score) / 10.0 if profit > 0 else 0.0
-        accuracy = (correct / total) * 100.0
-        final_score = profit + risk_bonus + (accuracy / 2.0)
+        equity = float(cp.get("equity", 1000.0))
+        total_ret = float(cp.get("total_return_pct", 0.0))
+        risk_exposure = float(cp.get("risk_exposure", 0.0))
+        risk_label = cp.get("risk_label", "Low")
+        liquidations = int(cp.get("liquidations", 0))
+        leverage = float(cp.get("leverage", 1))
 
         scores.append({
             "team": team_name,
-            "score": final_score,
-            "profit": profit,
-            "risk": risk_score,
-            "accuracy": accuracy,
-            "correct": correct,
-            "total": total
+            "equity": equity,
+            "total_return": total_ret,
+            "risk_exposure": risk_exposure,
+            "risk_label": risk_label,
+            "liquidations": liquidations,
+            "leverage": leverage
         })
 
     # Show waiting teams
@@ -350,7 +338,8 @@ def show_crypto_crash_scoreboard(game):
         st.markdown(f"⏳ **Waiting for decisions:** {', '.join(waiting_teams)}")
         st.markdown("---")
 
-    scores.sort(key=lambda x: x["score"], reverse=True)
+    # ✅ FIXED: Rank by equity (not fake profit score)
+    scores.sort(key=lambda x: x["equity"], reverse=True)
 
     for rank, data in enumerate(scores, 1):
         medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"#{rank}"
@@ -364,45 +353,60 @@ def show_crypto_crash_scoreboard(game):
                     <span style="font-size:48px;">{medal}</span>
                     <span class="team-name-display" style="color:{name_color};">{data['team']}</span>
                 </div>
-                <div class="metric-value" style="color:{name_color};">{data['score']:.1f}</div>
+                <div class="metric-value" style="color:{name_color};">{data['equity']:,.0f}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        cols = st.columns(4)
+        cols = st.columns(5)
+        
         with cols[0]:
-            profit_color = "#00ff88" if data["profit"] >= 0 else "#ff4757"
+            equity_color = "#00ff88" if data["equity"] >= 1000 else "#ffa502" if data["equity"] >= 500 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{profit_color};">{data['profit']:+.1f}%</div>
-                <div class="metric-label">💰 PROFIT</div>
+                <div class="metric-value" style="color:{equity_color};">{data['equity']:,.0f}</div>
+                <div class="metric-label">💼 EQUITY</div>
             </div>
             """, unsafe_allow_html=True)
+        
         with cols[1]:
-            risk_color = "#00ff88" if data["risk"] < 40 else "#ffa502" if data["risk"] < 70 else "#ff4757"
+            ret_color = "#00ff88" if data["total_return"] >= 0 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{risk_color};">{data['risk']:.0f}/100</div>
-                <div class="metric-label">⚠️ RISK</div>
+                <div class="metric-value" style="color:{ret_color};">{data['total_return']:+.1f}%</div>
+                <div class="metric-label">📈 TOTAL RETURN</div>
             </div>
             """, unsafe_allow_html=True)
+        
         with cols[2]:
-            acc_color = "#00ff88" if data["accuracy"] > 60 else "#ffa502" if data["accuracy"] > 40 else "#ff4757"
+            risk_color = "#00ff88" if data["risk_exposure"] < 30 else "#ffa502" if data["risk_exposure"] < 60 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{acc_color};">{data['accuracy']:.0f}%</div>
-                <div class="metric-label">🎯 ACCURACY</div>
+                <div class="metric-value" style="color:{risk_color};">{data['risk_label']}</div>
+                <div class="metric-label">⚠️ RISK ({data['risk_exposure']:.0f}/100)</div>
             </div>
             """, unsafe_allow_html=True)
+        
         with cols[3]:
+            lev_color = "#00ff88" if data["leverage"] <= 2 else "#ffa502" if data["leverage"] <= 3 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{data['correct']}/{data['total']}</div>
-                <div class="metric-label">✅ CORRECT</div>
+                <div class="metric-value" style="color:{lev_color};">{data['leverage']:.0f}x</div>
+                <div class="metric-label">⚡ LEVERAGE</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with cols[4]:
+            liq_color = "#00ff88" if data["liquidations"] == 0 else "#ff4757"
+            st.markdown(f"""
+            <div class="metric-display">
+                <div class="metric-value" style="color:{liq_color};">{data['liquidations']}</div>
+                <div class="metric-label">🚨 LIQUIDATIONS</div>
             </div>
             """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
+
 
 # ============================================================================
 # MAIN
