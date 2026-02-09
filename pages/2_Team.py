@@ -1,8 +1,5 @@
 """
 Team Page - Compact layout with side timer
-UPDATED: Crypto hints shown under each indicator (sentiment/volume/hype)
-UPDATED (this step):
-- Removed Ready checkbox + ready state logic (admin now tracks decisions saved only)
 """
 
 import streamlit as st
@@ -21,8 +18,7 @@ state.init_user_session()
 
 # Compact CSS
 st.markdown("""
-<style>
-    .main {
+<style>.main {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 0.5rem !important;
     }
@@ -30,26 +26,18 @@ st.markdown("""
     h1 { font-size: 1.8rem !important; margin: 0.5rem 0 !important; color: white; }
     h2 { font-size: 1.3rem !important; margin: 0.3rem 0 !important; color: white; }
     h3 { font-size: 1.1rem !important; margin: 0.2rem 0 !important; }
-    p { font-size: 0.9rem !important; margin: 0.2rem 0 !important; }
-
-    .stButton>button {
+    p { font-size: 0.9rem !important; margin: 0.2rem 0 !important; }.stButton>button {
         padding: 0.4rem 1rem !important;
         font-size: 0.9rem !important;
-    }
-
-    .block-container {
+    }.block-container {
         padding: 1rem !important;
         max-width: 100% !important;
-    }
-
-    .team-card {
+    }.team-card {
         background: rgba(255, 255, 255, 0.95);
         border-radius: 10px;
         padding: 12px;
         margin: 8px 0;
-    }
-
-    .timer-box {
+    }.timer-box {
         background: #0f2027;
         color: #00ff88;
         padding: 15px;
@@ -60,9 +48,7 @@ st.markdown("""
         margin: 10px 0;
         position: sticky;
         top: 10px;
-    }
-
-    .scenario-box {
+    }.scenario-box {
         background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
         border-radius: 10px;
         padding: 12px;
@@ -72,30 +58,22 @@ st.markdown("""
 
     div[data-testid="stVerticalBlock"] > div {
         gap: 0.3rem !important;
-    }
-
-    .hint-card {
+    }.hint-card {
         background: rgba(255,255,255,0.92);
         border-radius: 10px;
         padding: 10px 12px;
         margin-top: 8px;
         border-left: 4px solid rgba(102,126,234,0.9);
-    }
-
-    .hint-title {
+    }.hint-title {
         font-weight: 700;
         color: #333;
         margin-bottom: 4px;
         font-size: 0.95rem;
-    }
-
-    .hint-text {
+    }.hint-text {
         color: #444;
         font-size: 0.85rem;
         line-height: 1.25rem;
-    }
-
-    .hint-line {
+    }.hint-line {
         color: #111;
         font-size: 0.85rem;
         margin-top: 6px;
@@ -328,13 +306,20 @@ def show_build_country_compact(game):
 
     st.markdown("#### 📋 Your Decisions")
 
-    tax = st.slider("💵 Tax Rate (%)", 10, 50, decisions.get("tax_rate", 30), 5, disabled=game["round_locked"])
-    edu = st.slider("📚 Education Spending (%)", 10, 50, decisions.get("education_spending", 25), 5, disabled=game["round_locked"])
-    infra = st.slider("🏗️ Infrastructure Spending (%)", 10, 50, decisions.get("infrastructure_spending", 25), 5, disabled=game["round_locked"])
+    # ✅ FIXED: Use previous round's decisions as defaults
+    # If no previous decisions exist (Round 1), use game defaults
+    default_tax = decisions.get("tax_rate", 30)
+    default_edu = decisions.get("education_spending", 25)
+    default_infra = decisions.get("infrastructure_spending", 25)
+    default_climate = decisions.get("climate_policy", "Moderate")
+
+    tax = st.slider("💵 Tax Rate (%)", 10, 50, default_tax, 5, disabled=game["round_locked"])
+    edu = st.slider("📚 Education Spending (%)", 10, 50, default_edu, 5, disabled=game["round_locked"])
+    infra = st.slider("🏗️ Infrastructure Spending (%)", 10, 50, default_infra, 5, disabled=game["round_locked"])
     climate = st.selectbox(
         "🌱 Climate Policy",
         ["Weak", "Moderate", "Strong"],
-        index=["Weak", "Moderate", "Strong"].index(decisions.get("climate_policy", "Moderate")),
+        index=["Weak", "Moderate", "Strong"].index(default_climate),
         disabled=game["round_locked"]
     )
 
@@ -408,10 +393,17 @@ def show_beat_market_compact(game):
         return
 
     st.markdown("#### 💼 Portfolio Allocation")
-    cash = st.slider("💵 Cash (%)", 0, 100, portfolio.get("cash_pct", 25), 5, disabled=game["round_locked"])
-    shares = st.slider("📊 Shares (%)", 0, 100, portfolio.get("shares_pct", 25), 5, disabled=game["round_locked"])
-    crypto = st.slider("₿ Crypto (%)", 0, 100, portfolio.get("crypto_pct", 25), 5, disabled=game["round_locked"])
-    bonds = st.slider("🏦 Bonds (%)", 0, 100, portfolio.get("bonds_pct", 25), 5, disabled=game["round_locked"])
+
+    # ✅ FIXED: Use previous round's portfolio as defaults
+    default_cash = portfolio.get("cash_pct", 25)
+    default_shares = portfolio.get("shares_pct", 25)
+    default_crypto = portfolio.get("crypto_pct", 25)
+    default_bonds = portfolio.get("bonds_pct", 25)
+
+    cash = st.slider("💵 Cash (%)", 0, 100, default_cash, 5, disabled=game["round_locked"])
+    shares = st.slider("📊 Shares (%)", 0, 100, default_shares, 5, disabled=game["round_locked"])
+    crypto = st.slider("₿ Crypto (%)", 0, 100, default_crypto, 5, disabled=game["round_locked"])
+    bonds = st.slider("🏦 Bonds (%)", 0, 100, default_bonds, 5, disabled=game["round_locked"])
 
     total = cash + shares + crypto + bonds
     if total != 100:
@@ -456,7 +448,7 @@ def show_crypto_crash_compact(game):
     decisions = team_data.get("decisions", {}) if isinstance(team_data.get("decisions", {}), dict) else {}
     decision_saved = team_data.get("decision_saved_round") == game["current_round"]
 
-    with st.expander("📖 How to Play", expanded=False):
+    with st.expander("📖 How to Play (Simple)", expanded=False):
         st.markdown("""
         **🎯 Objective:** Grow your equity by choosing a crypto mix and leverage.
 
@@ -574,14 +566,20 @@ def show_crypto_crash_compact(game):
 
     st.markdown("#### 💰 Your Crypto Allocation (must total 100%)")
 
+    # ✅ FIXED: Use previous round's allocations as defaults
     existing = decisions.get("allocations", {"btc": 40, "eth": 30, "doge": 20, "stable": 10})
     if not isinstance(existing, dict):
         existing = {"btc": 40, "eth": 30, "doge": 20, "stable": 10}
 
-    btc = st.slider("🟠 Bitcoin (BTC) %", 0, 100, int(existing.get("btc", 40)), 5, disabled=game["round_locked"])
-    eth = st.slider("🔵 Ethereum (ETH) %", 0, 100, int(existing.get("eth", 30)), 5, disabled=game["round_locked"])
-    doge = st.slider("🟡 Dogecoin (DOGE) %", 0, 100, int(existing.get("doge", 20)), 5, disabled=game["round_locked"])
-    stable = st.slider("🟢 Stablecoin %", 0, 100, int(existing.get("stable", 10)), 5, disabled=game["round_locked"])
+    default_btc = int(existing.get("btc", 40))
+    default_eth = int(existing.get("eth", 30))
+    default_doge = int(existing.get("doge", 20))
+    default_stable = int(existing.get("stable", 10))
+
+    btc = st.slider("🟠 Bitcoin (BTC) %", 0, 100, default_btc, 5, disabled=game["round_locked"])
+    eth = st.slider("🔵 Ethereum (ETH) %", 0, 100, default_eth, 5, disabled=game["round_locked"])
+    doge = st.slider("🟡 Dogecoin (DOGE) %", 0, 100, default_doge, 5, disabled=game["round_locked"])
+    stable = st.slider("🟢 Stablecoin %", 0, 100, default_stable, 5, disabled=game["round_locked"])
 
     total = btc + eth + doge + stable
     if total != 100:
@@ -590,8 +588,12 @@ def show_crypto_crash_compact(game):
         st.success("✅ Balanced (100%)")
 
     st.markdown("#### ⚡ Leverage")
+    
+    # ✅ FIXED: Use previous round's leverage as default
     existing_lev = int(decisions.get("leverage", 1)) if str(decisions.get("leverage", 1)).isdigit() else 1
-    leverage = st.slider("Leverage (1x = normal, 5x = extreme)", 1, 5, max(1, min(5, existing_lev)), 1, disabled=game["round_locked"])
+    default_leverage = max(1, min(5, existing_lev))
+    
+    leverage = st.slider("Leverage (1x = normal, 5x = extreme)", 1, 5, default_leverage, 1, disabled=game["round_locked"])
 
     allocations = {"btc": btc, "eth": eth, "doge": doge, "stable": stable}
 

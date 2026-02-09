@@ -7,6 +7,11 @@ import shared_state as state
 import time
 import config
 from streamlit_autorefresh import st_autorefresh
+import qrcode
+from io import BytesIO
+import base64
+from streamlit_javascript import st_javascript
+from datetime import datetime
 
 st.set_page_config(
     page_title="Admin Control",
@@ -116,8 +121,43 @@ st.markdown("""
     section[data-testid="stSidebar"] h3 {
         color: #111 !important;
     }
+    
+    /* ✅ NEW: QR code styling */.qr-mini-card {
+        background: white;
+        border-radius: 12px;
+        padding: 15px;
+        margin: 10px 0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        text-align: center;
+    }.qr-clickable {
+        display: inline-block;
+        transition: transform 0.2s;
+        cursor: pointer;
+    }.qr-clickable:hover {
+        transform: scale(1.05);
+    }
 </style>
 """, unsafe_allow_html=True)
+
+
+def generate_qr_code(url: str) -> str:
+    """Generate QR code as base64 image"""
+    try:
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(url)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+
+        return f"data:image/png;base64,{img_str}"
+    except Exception as e:
+        st.error(f"Error generating QR code: {e}")
+        return ""
+
 
 if not state.is_admin():
     st.error("🚫 Admin access required")
@@ -217,6 +257,35 @@ with st.sidebar:
     if game["game_type"] == "beat_market":
         st.markdown(f"**ESG Mode:** {'Yes' if game['settings'].get('esg_mode') else 'No'}")
     
+        st.markdown("---")
+    
+    # ✅ NEW: Export Results
+    st.markdown("## 📥 Export Results")
+    
+    if game["status"] in ["running", "finished"]:
+        if st.button("📊 Download Excel Report", use_container_width=True, type="primary"):
+            try:
+                excel_data = state.export_game_results_to_excel(st.session_state.join_code)
+                
+                if excel_data:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"game_results_{game['game_type']}_{timestamp}.xlsx"
+                    
+                    st.download_button(
+                        label="💾 Download Excel File",
+                        data=excel_data,
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                    st.success("✅ Excel file ready for download!")
+                else:
+                    st.error("❌ Failed to generate Excel file")
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+    else:
+        st.info("Start the game to enable export")
+        
     st.markdown("---")
     
     if st.button("🚪 End Game & Return Home", use_container_width=True):
@@ -228,7 +297,8 @@ with st.sidebar:
             st.session_state.confirm_end = True
             st.warning("Click again to confirm")
 
-tab1, tab2 = st.tabs(["📋 Team Management", "🎮 Round Control"])
+# ✅ NEW: 3-tab layout (added "Team QR Codes" tab)
+tab1, tab2, tab3 = st.tabs(["📋 Team Management", "🎮 Round Control", "🔗 Team QR Codes"])
 
 with tab1:
     st.markdown("### 👥 Team Management")
@@ -256,9 +326,15 @@ with tab1:
             else:
                 current_round = game.get("current_round", 1)
                 decision_saved = team_data.get("decision_saved_round") == current_round
+                auto_submitted = team_data.get("auto_submitted", False)
+                
                 if decision_saved:
-                    status_class = "status-ready"
-                    status_text = "✅ Saved"
+                    if auto_submitted:
+                        status_class = "status-waiting"
+                        status_text = "⚠️ Auto-submitted"
+                    else:
+                        status_class = "status-ready"
+                        status_text = "✅ Saved"
                 else:
                     status_class = "status-waiting"
                     status_text = "⏳ Deciding..."
@@ -433,7 +509,9 @@ with tab2:
             else:
                 if st.button("🏁 Finish Game", use_container_width=True, type="primary"):
                     state.process_current_round(st.session_state.join_code)
-                    
+                    # Store final round history snapshot
+                    state._store_round_snapshot(st.session_state.join_code, game["current_round"])
+
                     state.update_game_session(st.session_state.join_code, {
                         "status": "finished",
                         "round_locked": True,
@@ -443,3 +521,83 @@ with tab2:
                     st.success("🎉 Game finished! Final results saved.")
                     time.sleep(0.8)
                     st.rerun()
+
+# ✅ NEW TAB: Team QR Codes
+with tab3:
+    st.markdown("### 🔗 Team QR Codes & Links")
+    st.info("💡 **Use this if teams lose their QR codes or close their browser**")
+    
+    if not game.get("team_codes"):
+        st.warning("⚠️ No team codes found for this game.")
+    else:
+        # Get base URL
+        origin = st_javascript("await window.location.origin")
+        base_url = origin or "http://localhost:8501"
+        
+        team_codes_list = sorted(game["team_codes"].items(), key=lambda x: x[1]["team_slot"])
+        
+        # Display in 2 columns
+        cols_per_row = 2
+        
+        for i in range(0, len(team_codes_list), cols_per_row):
+            cols = st.columns(cols_per_row)
+            
+            for j, col in enumerate(cols):
+                if i + j >= len(team_codes_list):
+                    continue
+                
+                code, info = team_codes_list[i + j]
+                team_slot = info["team_slot"]
+                team_name = info.get("team_name", "Not joined yet")
+                assigned = info["assigned"]
+                team_url = f"{base_url}/?team_code={code}"
+                
+                with col:
+                    # Status color
+                    status_color = "#00ff88" if assigned else "#ffa502"
+                    status_text = f"✅ {team_name}" if assigned else "⏳ Waiting to join"
+                    
+                    st.markdown(f"""
+                    <div class="qr-mini-card">
+                        <h3 style="color: #667eea; margin: 0 0 10px 0;">Team {team_slot}</h3>
+                        <p style="color: {status_color}; font-weight: 700; margin: 5px 0;">
+                            {status_text}
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Generate and display QR code
+                    qr_img = generate_qr_code(team_url)
+                    
+                    st.markdown(
+                        f"""
+                        <div style="text-align: center; margin: 10px 0;">
+                            <a href="{team_url}" target="_blank" class="qr-clickable">
+                                <img src="{qr_img}" width="180" style="border-radius: 10px; border: 2px solid #667eea;">
+                            </a>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                    
+                    # Copyable link
+                    st.text_input(
+                        f"Team {team_slot} Link",
+                        value=team_url,
+                        key=f"link_{code}",
+                        label_visibility="collapsed"
+                    )
+                    
+                    # Copy button
+                    if st.button(f"📋 Copy Link", key=f"copy_{code}", use_container_width=True):
+                        st.success("✅ Link copied! (Share with team)")
+        
+        st.markdown("---")
+        
+        # All links in one text area for bulk sharing
+        st.markdown("### 📋 All Team Links (for bulk sharing)")
+        all_links = "\n".join([
+            f"Team {info['team_slot']}: {base_url}/?team_code={code}"
+            for code, info in sorted(team_codes_list, key=lambda x: x[1]["team_slot"])
+        ])
+        st.text_area("Copy all links:", value=all_links, height=150, label_visibility="collapsed")
