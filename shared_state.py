@@ -1,7 +1,5 @@
 """
 Shared state management for Economics Games
-Handles data persistence across pages and sessions
-CORRECTED: Fixed admin authentication and session management
 """
 
 import streamlit as st
@@ -72,13 +70,13 @@ def create_game_session(game_type: str, admin_name: str, settings: dict) -> str:
         join_code = generate_code()
 
     games[join_code] = {
-        "game_type": game_type,  # "build_country" or "beat_market" or "crypto_crash"
+        "game_type": game_type,
         "admin_name": admin_name,
         "created_at": datetime.now().isoformat(),
-        "status": "setup",  # setup, running, finished
+        "status": "setup",
         "settings": settings,
         "teams": {},
-        "team_codes": {},  # Maps team codes to team slots
+        "team_codes": {},
         "current_round": 0,
         "round_locked": False,
         "round_timer_end": None,
@@ -275,19 +273,195 @@ def is_round_locked(join_code: str) -> bool:
     return game.get("round_locked", False) if game else False
 
 
+def _store_round_snapshot(join_code: str, round_num: int):
+    """
+    ✅ FIXED: Store a snapshot of current round data for history tracking.
+    Called AFTER round processing but BEFORE advancing to next round.
+    
+    IMPORTANT: Only stores if round_num >= 1 (skips Round 0)
+    FIXED: Removed the decision_saved_round check that was skipping auto-submitted teams
+    """
+    # Don't store Round 0 (game hasn't started yet)
+    if round_num == 0:
+        return
+    
+    game = get_game_session(join_code)
+    if not game:
+        return
+    
+    for team_name, team_data in game.get("teams", {}).items():
+        if "round_history" not in team_data:
+            team_data["round_history"] = {}
+        
+        # Only store if not already stored for this round
+        if str(round_num) in team_data["round_history"]:
+            continue
+        
+        # ✅ REMOVED: The check that was preventing auto-submitted teams from being stored
+        # Old code: if decision_saved_round < round_num: continue
+        
+        decisions = team_data.get("decisions", {})
+        
+        if game["game_type"] == "build_country":
+            metrics = team_data.get("metrics", {
+                "gdp": 100.0,
+                "employment": 75.0,
+                "inequality": 50.0,
+                "approval": 50.0
+            })
+            score = (
+                metrics.get("gdp", 100) * 0.3 +
+                metrics.get("employment", 75) * 0.25 +
+                (100 - metrics.get("inequality", 50)) * 0.25 +
+                metrics.get("approval", 50) * 0.2
+            )
+            
+            # Deep copy to prevent reference issues
+            team_data["round_history"][str(round_num)] = {
+                "decisions": {
+                    "tax_rate": decisions.get("tax_rate", 30),
+                    "education_spending": decisions.get("education_spending", 25),
+                    "infrastructure_spending": decisions.get("infrastructure_spending", 25),
+                    "climate_policy": decisions.get("climate_policy", "Moderate")
+                },
+                "metrics": {
+                    "gdp": metrics.get("gdp", 100.0),
+                    "employment": metrics.get("employment", 75.0),
+                    "inequality": metrics.get("inequality", 50.0),
+                    "approval": metrics.get("approval", 50.0)
+                },
+                "score": score
+            }
+            
+        elif game["game_type"] == "beat_market":
+            portfolio = team_data.get("portfolio", {})
+            portfolio_value = team_data.get("portfolio_value", {})
+            returns = float(portfolio_value.get("returns", 0.0))
+            risk = float(portfolio_value.get("risk", 50.0))
+            score = (returns / max(1.0, risk)) * 100.0 if risk > 0 else returns
+            
+            team_data["round_history"][str(round_num)] = {
+                "decisions": {
+                    "cash_pct": portfolio.get("cash_pct", 25),
+                    "shares_pct": portfolio.get("shares_pct", 25),
+                    "crypto_pct": portfolio.get("crypto_pct", 25),
+                    "bonds_pct": portfolio.get("bonds_pct", 25)
+                },
+                "portfolio_value": {
+                    "value": portfolio_value.get("value", 1000000),
+                    "returns": returns,
+                    "risk": risk,
+                    "esg": portfolio_value.get("esg", 50.0)
+                },
+                "score": score
+            }
+            
+        elif game["game_type"] == "crypto_crash":
+            cp = team_data.get("crypto_portfolio", {})
+            alloc = decisions.get("allocations", {})
+            
+            team_data["round_history"][str(round_num)] = {
+                "decisions": {
+                    "allocations": {
+                        "btc": alloc.get("btc", 40),
+                        "eth": alloc.get("eth", 30),
+                        "doge": alloc.get("doge", 20),
+                        "stable": alloc.get("stable", 10)
+                    },
+                    "leverage": decisions.get("leverage", 1)
+                },
+                "crypto_portfolio": {
+                    "equity": cp.get("equity", 1000.0),
+                    "last_return_pct": cp.get("last_return_pct", 0.0),
+                    "total_return_pct": cp.get("total_return_pct", 0.0),
+                    "risk_exposure": cp.get("risk_exposure", 0.0),
+                    "risk_label": cp.get("risk_label", "Low"),
+                    "liquidations": cp.get("liquidations", 0)
+                },
+                "score": float(cp.get("equity", 1000.0))
+            }
+    
+    # Save back
+    games = load_json(GAMES_FILE)
+    games[join_code] = game
+    save_json(GAMES_FILE, games)
+
+
 def advance_round(join_code: str):
     """
     Advance to next round:
-    1) process current round outcomes
-    2) generate next scenario/event/indicators + narrative hints
-    3) persist updated state
+    1) Auto-submit missing decisions (use previous round's choices)
+    2) Process current round outcomes
+    3) ✅ STORE ROUND HISTORY SNAPSHOT (only if round >= 1)
+    4) Generate next scenario/event/indicators + narrative hints
+    5) Persist updated state
     """
     game = get_game_session(join_code)
     if not game:
         return
 
+    # Auto-submit missing decisions before processing
+    current_round = game.get("current_round", 1)
+    
+    for team_name, team_data in game.get("teams", {}).items():
+        decision_saved_round = team_data.get("decision_saved_round", 0)
+        
+        # If team hasn't saved decision for current round
+        if decision_saved_round != current_round:
+            # Get their previous decisions (or use defaults)
+            game_type = game.get("game_type")
+            
+            if game_type == "build_country":
+                prev_decisions = team_data.get("decisions", {})
+                default_decisions = {
+                    "tax_rate": prev_decisions.get("tax_rate", 30),
+                    "education_spending": prev_decisions.get("education_spending", 25),
+                    "infrastructure_spending": prev_decisions.get("infrastructure_spending", 25),
+                    "climate_policy": prev_decisions.get("climate_policy", "Moderate")
+                }
+                team_data["decisions"] = default_decisions
+                team_data["decision_saved_round"] = current_round
+                team_data["auto_submitted"] = True
+                
+            elif game_type == "beat_market":
+                prev_portfolio = team_data.get("portfolio", {})
+                default_portfolio = {
+                    "cash_pct": prev_portfolio.get("cash_pct", 25),
+                    "shares_pct": prev_portfolio.get("shares_pct", 25),
+                    "crypto_pct": prev_portfolio.get("crypto_pct", 25),
+                    "bonds_pct": prev_portfolio.get("bonds_pct", 25)
+                }
+                team_data["portfolio"] = default_portfolio
+                team_data["decision_saved_round"] = current_round
+                team_data["auto_submitted"] = True
+                
+            elif game_type == "crypto_crash":
+                prev_decisions = team_data.get("decisions", {})
+                prev_alloc = prev_decisions.get("allocations", {}) if isinstance(prev_decisions.get("allocations"), dict) else {}
+                
+                default_decisions = {
+                    "allocations": {
+                        "btc": prev_alloc.get("btc", 40),
+                        "eth": prev_alloc.get("eth", 30),
+                        "doge": prev_alloc.get("doge", 20),
+                        "stable": prev_alloc.get("stable", 10)
+                    },
+                    "leverage": prev_decisions.get("leverage", 1)
+                }
+                team_data["decisions"] = default_decisions
+                team_data["decision_saved_round"] = current_round
+                team_data["auto_submitted"] = True
+
+    # Save auto-submitted decisions
+    games = load_json(GAMES_FILE)
+    games[join_code] = game
+    save_json(GAMES_FILE, games)
+
     # Process current round (scoreboard)
     process_current_round(join_code)
+
+    # ✅ FIXED: Store round history AFTER processing, BEFORE advancing (skips Round 0)
+    _store_round_snapshot(join_code, current_round)
 
     # Reload after processing
     game = get_game_session(join_code)
@@ -411,7 +585,6 @@ def advance_round(join_code: str):
             "price_change": round(random.uniform(-20, 20), 2),
         }
 
-        # --- Student-friendly: store explanation + hint per indicator ---
         # Sentiment
         if indicators["sentiment"] < 35:
             sentiment_text = "Fear dominates the market. Traders are pessimistic and selling pressure is rising."
@@ -445,13 +618,10 @@ def advance_round(join_code: str):
             hype_text = "Hype is moderate. Speculation exists, but it hasn't reached mania levels."
             hype_hint = "Balanced conditions: focus on BTC/ETH and manage leverage."
 
-        # Narrative (no hints appended)
         market_story = f"{sentiment_text} {volume_text} {hype_text}"
 
         game["game_state"]["indicators"] = indicators
         game["game_state"]["market_story"] = market_story
-
-        # ✅ New: structured notes for UI to show per indicator
         game["game_state"]["indicator_notes"] = {
             "sentiment": {"text": sentiment_text, "hint": sentiment_hint},
             "volume": {"text": volume_text, "hint": volume_hint},
@@ -655,12 +825,6 @@ def _process_crypto_crash_round(game: dict):
     - Uses indicators to generate asset returns each round
     - Applies leverage + liquidation rule
     - Updates team_data["crypto_portfolio"] for scoreboard
-
-    Expected team inputs:
-      team_data["decisions"] = {
-        "allocations": {"btc": 40, "eth": 30, "doge": 20, "stable": 10},  # target sum = 100
-        "leverage": 2,  # 1..5
-      }
     """
 
     def _normalize_allocations(a: dict) -> dict:
@@ -668,12 +832,10 @@ def _process_crypto_crash_round(game: dict):
         cleaned = {k: float(a.get(k, 0.0)) for k in keys}
         total = sum(cleaned.values())
 
-        # Fallback if missing/broken
         if total <= 0:
             cleaned = {"btc": 50.0, "eth": 20.0, "doge": 10.0, "stable": 20.0}
             total = 100.0
 
-        # Normalize (protects you if UI sends 95 or 105 etc.)
         for k in cleaned:
             cleaned[k] = cleaned[k] * 100.0 / total
 
@@ -685,9 +847,9 @@ def _process_crypto_crash_round(game: dict):
         volume = float(indicators.get("volume", 60))
         pc = float(indicators.get("price_change", 0))
 
-        divergence = max(0.0, hype - sentiment)      # hype > sentiment = bubble risk
-        trend_down = max(0.0, -pc)                   # negative day = downside risk
-        thin_liq = max(0.0, 40.0 - volume)           # low volume = jumpy market
+        divergence = max(0.0, hype - sentiment)
+        trend_down = max(0.0, -pc)
+        thin_liq = max(0.0, 40.0 - volume)
 
         risk = 0.45 * divergence + 0.35 * (trend_down * 3.0) + 0.20 * thin_liq
         return _clamp(risk, 0.0, 100.0)
@@ -825,14 +987,167 @@ def _process_crypto_crash_round(game: dict):
 
 
 # ============================================================================
-# USER SESSION MANAGEMENT - ✅ FIXED
+# EXCEL EXPORT
+# ============================================================================
+
+def export_game_results_to_excel(join_code: str):
+    """
+    Export complete game results to Excel format with multiple sheets.
+    Returns: BytesIO object containing Excel file
+    """
+    import pandas as pd
+    from io import BytesIO
+    
+    game = get_game_session(join_code)
+    if not game:
+        return None
+    
+    # Create Excel writer
+    output = BytesIO()
+    
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        
+        # Sheet 1: Game Summary
+        game_summary = {
+            "Game Type": [game.get("game_type", "Unknown")],
+            "Admin": [game.get("admin_name", "Unknown")],
+            "Created At": [game.get("created_at", "Unknown")],
+            "Status": [game.get("status", "Unknown")],
+            "Total Rounds": [game.get("settings", {}).get("num_rounds", 0)],
+            "Current Round": [game.get("current_round", 0)],
+            "Number of Teams": [len(game.get("teams", {}))]
+        }
+        df_summary = pd.DataFrame(game_summary)
+        df_summary.to_excel(writer, sheet_name="Game Summary", index=False)
+        
+        # Sheet 2: Final Scores
+        final_scores = []
+        for team_name, team_data in game.get("teams", {}).items():
+            if game["game_type"] == "build_country":
+                metrics = team_data.get("metrics", {})
+                score = (
+                    metrics.get("gdp", 100) * 0.3 +
+                    metrics.get("employment", 75) * 0.25 +
+                    (100 - metrics.get("inequality", 50)) * 0.25 +
+                    metrics.get("approval", 50) * 0.2
+                )
+                final_scores.append({
+                    "Team": team_name,
+                    "Final Score": round(score, 2),
+                    "GDP": round(metrics.get("gdp", 100), 2),
+                    "Employment": round(metrics.get("employment", 75), 2),
+                    "Inequality": round(metrics.get("inequality", 50), 2),
+                    "Approval": round(metrics.get("approval", 50), 2)
+                })
+            
+            elif game["game_type"] == "beat_market":
+                pv = team_data.get("portfolio_value", {})
+                returns = pv.get("returns", 0)
+                risk = pv.get("risk", 50)
+                score = (returns / max(1.0, risk)) * 100.0 if risk > 0 else returns
+                final_scores.append({
+                    "Team": team_name,
+                    "Risk-Adj Score": round(score, 2),
+                    "Portfolio Value": round(pv.get("value", 1000000), 2),
+                    "Returns (%)": round(returns, 2),
+                    "Risk": round(risk, 2)
+                })
+            
+            elif game["game_type"] == "crypto_crash":
+                cp = team_data.get("crypto_portfolio", {})
+                final_scores.append({
+                    "Team": team_name,
+                    "Final Equity": round(cp.get("equity", 1000), 2),
+                    "Total Return (%)": round(cp.get("total_return_pct", 0), 2),
+                    "Risk Exposure": round(cp.get("risk_exposure", 0), 2),
+                    "Risk Label": cp.get("risk_label", "Low"),
+                    "Leverage": cp.get("leverage", 1),
+                    "Liquidations": cp.get("liquidations", 0)
+                })
+        
+        if final_scores:
+            df_final = pd.DataFrame(final_scores)
+            df_final = df_final.sort_values(by=df_final.columns[1], ascending=False)
+            df_final.insert(0, "Rank", range(1, len(df_final) + 1))
+            df_final.to_excel(writer, sheet_name="Final Scores", index=False)
+        
+        # Sheet 3-N: Round-by-Round Details for Each Team
+        for team_name, team_data in game.get("teams", {}).items():
+            round_history = team_data.get("round_history", {})
+            
+            if not round_history:
+                continue
+            
+            round_data_list = []
+            
+            for round_num in sorted([int(r) for r in round_history.keys()]):
+                round_data = round_history.get(str(round_num), {})
+                
+                if game["game_type"] == "build_country":
+                    decisions = round_data.get("decisions", {})
+                    metrics = round_data.get("metrics", {})
+                    round_data_list.append({
+                        "Round": round_num,
+                        "Tax Rate (%)": decisions.get("tax_rate", 30),
+                        "Education (%)": decisions.get("education_spending", 25),
+                        "Infrastructure (%)": decisions.get("infrastructure_spending", 25),
+                        "Climate Policy": decisions.get("climate_policy", "Moderate"),
+                        "GDP": round(metrics.get("gdp", 100), 2),
+                        "Employment (%)": round(metrics.get("employment", 75), 2),
+                        "Inequality": round(metrics.get("inequality", 50), 2),
+                        "Approval (%)": round(metrics.get("approval", 50), 2),
+                        "Score": round(round_data.get("score", 0), 2)
+                    })
+                
+                elif game["game_type"] == "beat_market":
+                    decisions = round_data.get("decisions", {})
+                    pv = round_data.get("portfolio_value", {})
+                    round_data_list.append({
+                        "Round": round_num,
+                        "Cash (%)": decisions.get("cash_pct", 25),
+                        "Shares (%)": decisions.get("shares_pct", 25),
+                        "Crypto (%)": decisions.get("crypto_pct", 25),
+                        "Bonds (%)": decisions.get("bonds_pct", 25),
+                        "Portfolio Value": round(pv.get("value", 1000000), 2),
+                        "Returns (%)": round(pv.get("returns", 0), 2),
+                        "Risk": round(pv.get("risk", 50), 2),
+                        "Risk-Adj Score": round(round_data.get("score", 0), 2)
+                    })
+                
+                elif game["game_type"] == "crypto_crash":
+                    decisions = round_data.get("decisions", {})
+                    alloc = decisions.get("allocations", {})
+                    cp = round_data.get("crypto_portfolio", {})
+                    round_data_list.append({
+                        "Round": round_num,
+                        "BTC (%)": alloc.get("btc", 40),
+                        "ETH (%)": alloc.get("eth", 30),
+                        "DOGE (%)": alloc.get("doge", 20),
+                        "Stable (%)": alloc.get("stable", 10),
+                        "Leverage": decisions.get("leverage", 1),
+                        "Equity": round(cp.get("equity", 1000), 2),
+                        "Round Return (%)": round(cp.get("last_return_pct", 0), 2),
+                        "Risk Label": cp.get("risk_label", "Low"),
+                        "Liquidations": cp.get("liquidations", 0)
+                    })
+            
+            if round_data_list:
+                df_team = pd.DataFrame(round_data_list)
+                # Sanitize sheet name (Excel limit: 31 chars, no special chars)
+                sheet_name = team_name[:28] + "..." if len(team_name) > 31 else team_name
+                sheet_name = "".join(c if c.isalnum() or c in (' ', '_') else '_' for c in sheet_name)
+                df_team.to_excel(writer, sheet_name=sheet_name, index=False)
+    
+    output.seek(0)
+    return output
+
+
+# ============================================================================
+# USER SESSION MANAGEMENT
 # ============================================================================
 
 def init_user_session():
-    """
-    Initialize user session state.
-    ✅ FIXED: Only sets defaults if keys don't exist (prevents clearing admin status)
-    """
+    """Initialize user session state."""
     if "user_type" not in st.session_state:
         st.session_state.user_type = None
 
@@ -847,14 +1162,11 @@ def init_user_session():
 
 
 def set_user_as_admin(admin_name: str, join_code: str):
-    """
-    Set current user as admin.
-    ✅ FIXED: Properly sets all required session state variables
-    """
+    """Set current user as admin."""
     st.session_state.user_type = "admin"
     st.session_state.admin_name = admin_name
     st.session_state.join_code = join_code.upper()
-    st.session_state.team_name = None  # Admin is not a team
+    st.session_state.team_name = None
 
 
 def set_user_as_team(team_name: str, join_code: str):
@@ -862,7 +1174,7 @@ def set_user_as_team(team_name: str, join_code: str):
     st.session_state.user_type = "team"
     st.session_state.team_name = team_name
     st.session_state.join_code = join_code.upper()
-    st.session_state.admin_name = None  # Team is not admin
+    st.session_state.admin_name = None
 
 
 def clear_user_session():
@@ -874,10 +1186,7 @@ def clear_user_session():
 
 
 def is_admin() -> bool:
-    """
-    Check if current user is admin.
-    ✅ FIXED: Ensures boolean return and proper comparison
-    """
+    """Check if current user is admin."""
     return st.session_state.get("user_type") == "admin"
 
 

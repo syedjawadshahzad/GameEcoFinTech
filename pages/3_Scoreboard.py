@@ -6,7 +6,6 @@ import streamlit as st
 import shared_state as state
 import time
 
-# ✅ add this dependency: streamlit-autorefresh
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
@@ -18,7 +17,7 @@ st.set_page_config(
 # Initialize
 state.init_user_session()
 
-# Auto-refresh every 3 seconds (works even when game is finished)
+# Auto-refresh every 3 seconds
 st_autorefresh(interval=3000, key="scoreboard_refresh")
 
 # Custom CSS
@@ -72,12 +71,25 @@ st.markdown("""
         font-weight: bold;
         font-family: 'Orbitron', sans-serif;
         margin: 15px 0;
+    }.round-history-card {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 15px;
+        margin: 10px 0;
+        border-left: 4px solid #00ff88;
+    }.decision-item {
+        background: rgba(255, 255, 255, 0.85);
+        padding: 8px 12px;
+        border-radius: 8px;
+        margin: 5px 0;
+        font-size: 14px;
+        color: #1a1a1a;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# SCOREBOARD DISPLAY FUNCTIONS
+# SCOREBOARD DISPLAY FUNCTIONS (DISPLAY ONLY - NO STORAGE)
 # ============================================================================
 
 def show_build_country_scoreboard(game):
@@ -85,17 +97,9 @@ def show_build_country_scoreboard(game):
         st.info("⏳ Waiting for teams to join...")
         return
 
-    current_round = game.get("current_round", 1)
+    # Calculate current scores
     scores = []
-    waiting_teams = []
-
     for team_name, team_data in game["teams"].items():
-        # Only show teams that have saved their decision for this round
-        decision_saved_round = team_data.get("decision_saved_round", 0)
-        if decision_saved_round != current_round:
-            waiting_teams.append(team_name)
-            continue
-
         metrics = team_data.get("metrics", {
             "gdp": 100.0,
             "employment": 75.0,
@@ -113,20 +117,17 @@ def show_build_country_scoreboard(game):
         scores.append({
             "team": team_name,
             "score": score,
-            "gdp": metrics.get("gdp", 100),
-            "employment": metrics.get("employment", 75),
-            "inequality": metrics.get("inequality", 50),
-            "approval": metrics.get("approval", 50),
+            "data": team_data
         })
-
-    # Show waiting teams
-    if waiting_teams:
-        st.markdown(f"⏳ **Waiting for decisions:** {', '.join(waiting_teams)}")
-        st.markdown("---")
 
     scores.sort(key=lambda x: x["score"], reverse=True)
 
-    for rank, data in enumerate(scores, 1):
+    # Display rankings
+    for rank, item in enumerate(scores, 1):
+        team_name = item["team"]
+        team_data = item["data"]
+        score = item["score"]
+        
         medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"#{rank}"
         card_class = f"rank-{rank}" if rank <= 3 else "scoreboard-card"
         name_color = "#0f2027" if rank <= 3 else "#00ff88"
@@ -136,44 +137,94 @@ def show_build_country_scoreboard(game):
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <div>
                     <span style="font-size:48px;">{medal}</span>
-                    <span class="team-name-display" style="color:{name_color};">{data['team']}</span>
+                    <span class="team-name-display" style="color:{name_color};">{team_name}</span>
                 </div>
-                <div class="metric-value" style="color:{name_color};">{data['score']:.1f}</div>
+                <div class="metric-value" style="color:{name_color};">{score:.1f}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
+        # Current metrics
+        metrics = team_data.get("metrics", {})
         cols = st.columns(4)
         with cols[0]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{data['gdp']:.1f}</div>
+                <div class="metric-value">{metrics.get('gdp', 100):.1f}</div>
                 <div class="metric-label">💰 GDP</div>
             </div>
             """, unsafe_allow_html=True)
         with cols[1]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{data['employment']:.1f}%</div>
+                <div class="metric-value">{metrics.get('employment', 75):.1f}%</div>
                 <div class="metric-label">👷 Employment</div>
             </div>
             """, unsafe_allow_html=True)
         with cols[2]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{data['inequality']:.1f}</div>
+                <div class="metric-value">{metrics.get('inequality', 50):.1f}</div>
                 <div class="metric-label">⚖️ Inequality</div>
             </div>
             """, unsafe_allow_html=True)
         with cols[3]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{data['approval']:.1f}%</div>
+                <div class="metric-value">{metrics.get('approval', 50):.1f}%</div>
                 <div class="metric-label">❤️ Approval</div>
             </div>
             """, unsafe_allow_html=True)
 
+        # ✅ FIXED: Just read and display history (don't create it)
+        with st.expander(f"📊 {team_name} - Round History", expanded=False):
+            round_history = team_data.get("round_history", {})
+            
+            if not round_history:
+                st.info("No history available yet - play at least one round")
+            else:
+                # Sort rounds numerically
+                sorted_rounds = sorted([int(r) for r in round_history.keys()])
+                
+                for round_num in sorted_rounds:
+                    round_data = round_history.get(str(round_num), {})
+                    
+                    # Safety check
+                    if not round_data:
+                        continue
+                    
+                    decisions = round_data.get("decisions", {})
+                    round_metrics = round_data.get("metrics", {})
+                    round_score = round_data.get("score", 0)
+                    
+                    st.markdown(f"""
+                    <div class="round-history-card">
+                        <h4 style="color: #00ff88; margin: 0 0 10px 0;">Round {round_num} - Score: {round_score:.1f}</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Decisions:**")
+                        st.markdown(f"""
+                        <div class="decision-item">💵 Tax Rate: {decisions.get('tax_rate', 30)}%</div>
+                        <div class="decision-item">📚 Education: {decisions.get('education_spending', 25)}%</div>
+                        <div class="decision-item">🏗️ Infrastructure: {decisions.get('infrastructure_spending', 25)}%</div>
+                        <div class="decision-item">🌱 Climate: {decisions.get('climate_policy', 'Moderate')}</div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.markdown("**Results:**")
+                        st.markdown(f"""
+                        <div class="decision-item">💰 GDP: {round_metrics.get('gdp', 100):.1f}</div>
+                        <div class="decision-item">👷 Employment: {round_metrics.get('employment', 75):.1f}%</div>
+                        <div class="decision-item">⚖️ Inequality: {round_metrics.get('inequality', 50):.1f}</div>
+                        <div class="decision-item">❤️ Approval: {round_metrics.get('approval', 50):.1f}%</div>
+                        """, unsafe_allow_html=True)
+
         st.markdown("<br>", unsafe_allow_html=True)
+
 
 def show_beat_market_scoreboard(game):
     if not game.get("teams"):
@@ -181,46 +232,27 @@ def show_beat_market_scoreboard(game):
         return
 
     esg_mode = bool(game.get("settings", {}).get("esg_mode"))
-    current_round = game.get("current_round", 1)
-
+    
     scores = []
-    waiting_teams = []
-
     for team_name, team_data in game["teams"].items():
-        # Only show teams that have saved their decision for this round
-        decision_saved_round = team_data.get("decision_saved_round", 0)
-        if decision_saved_round != current_round:
-            waiting_teams.append(team_name)
-            continue
-
-        portfolio = team_data.get("portfolio_value", {
-            "value": 1_000_000,
-            "returns": 0.0,
-            "risk": 50.0,
-            "esg": 50.0
-        })
-
-        returns = float(portfolio.get("returns", 0.0))
-        risk = float(portfolio.get("risk", 50.0))
-        risk_adj_score = (returns / max(1.0, risk)) * 100.0 if risk > 0 else returns
+        portfolio_value = team_data.get("portfolio_value", {})
+        returns = float(portfolio_value.get("returns", 0.0))
+        risk = float(portfolio_value.get("risk", 50.0))
+        score = (returns / max(1.0, risk)) * 100.0 if risk > 0 else returns
 
         scores.append({
             "team": team_name,
-            "score": risk_adj_score,
-            "value": float(portfolio.get("value", 1_000_000)),
-            "returns": returns,
-            "risk": risk,
-            "esg": float(portfolio.get("esg", 50.0)),
+            "score": score,
+            "data": team_data
         })
-
-    # Show waiting teams
-    if waiting_teams:
-        st.markdown(f"⏳ **Waiting for decisions:** {', '.join(waiting_teams)}")
-        st.markdown("---")
 
     scores.sort(key=lambda x: x["score"], reverse=True)
 
-    for rank, data in enumerate(scores, 1):
+    for rank, item in enumerate(scores, 1):
+        team_name = item["team"]
+        team_data = item["data"]
+        score = item["score"]
+        
         medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"#{rank}"
         card_class = f"rank-{rank}" if rank <= 3 else "scoreboard-card"
         name_color = "#0f2027" if rank <= 3 else "#00ff88"
@@ -230,37 +262,40 @@ def show_beat_market_scoreboard(game):
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <div>
                     <span style="font-size:48px;">{medal}</span>
-                    <span class="team-name-display" style="color:{name_color};">{data['team']}</span>
+                    <span class="team-name-display" style="color:{name_color};">{team_name}</span>
                 </div>
-                <div class="metric-value" style="color:{name_color};">{data['score']:.2f}</div>
+                <div class="metric-value" style="color:{name_color};">{score:.2f}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
+        portfolio_value = team_data.get("portfolio_value", {})
         cols = st.columns(5 if esg_mode else 4)
 
         with cols[0]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">${data['value']:,.0f}</div>
+                <div class="metric-value">${portfolio_value.get('value', 1000000):,.0f}</div>
                 <div class="metric-label">💼 VALUE</div>
             </div>
             """, unsafe_allow_html=True)
 
         with cols[1]:
-            returns_color = "#00ff88" if data["returns"] >= 0 else "#ff4757"
+            returns = portfolio_value.get("returns", 0)
+            returns_color = "#00ff88" if returns >= 0 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{returns_color};">{data['returns']:+.1f}%</div>
+                <div class="metric-value" style="color:{returns_color};">{returns:+.1f}%</div>
                 <div class="metric-label">📈 RETURNS</div>
             </div>
             """, unsafe_allow_html=True)
 
         with cols[2]:
-            risk_color = "#ff4757" if data["risk"] > 70 else "#ffa502" if data["risk"] > 40 else "#00ff88"
+            risk = portfolio_value.get("risk", 50)
+            risk_color = "#ff4757" if risk > 70 else "#ffa502" if risk > 40 else "#00ff88"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{risk_color};">{data['risk']:.0f}/100</div>
+                <div class="metric-value" style="color:{risk_color};">{risk:.0f}/100</div>
                 <div class="metric-label">⚠️ RISK</div>
             </div>
             """, unsafe_allow_html=True)
@@ -268,80 +303,92 @@ def show_beat_market_scoreboard(game):
         with cols[3]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{data['score']:.2f}</div>
+                <div class="metric-value">{score:.2f}</div>
                 <div class="metric-label">🎯 RISK-ADJ</div>
             </div>
             """, unsafe_allow_html=True)
 
         if esg_mode:
             with cols[4]:
-                esg_color = "#00ff88" if data["esg"] > 70 else "#ffa502" if data["esg"] > 40 else "#ff4757"
+                esg = portfolio_value.get("esg", 50)
+                esg_color = "#00ff88" if esg > 70 else "#ffa502" if esg > 40 else "#ff4757"
                 st.markdown(f"""
                 <div class="metric-display">
-                    <div class="metric-value" style="color:{esg_color};">{data['esg']:.0f}/100</div>
+                    <div class="metric-value" style="color:{esg_color};">{esg:.0f}/100</div>
                     <div class="metric-label">🌱 ESG</div>
                 </div>
                 """, unsafe_allow_html=True)
+
+        # Round history
+        with st.expander(f"📊 {team_name} - Round History", expanded=False):
+            round_history = team_data.get("round_history", {})
+            
+            if not round_history:
+                st.info("No history available yet - play at least one round")
+            else:
+                sorted_rounds = sorted([int(r) for r in round_history.keys()])
+                
+                for round_num in sorted_rounds:
+                    round_data = round_history.get(str(round_num), {})
+                    
+                    if not round_data:
+                        continue
+                    
+                    decisions = round_data.get("decisions", {})
+                    pv = round_data.get("portfolio_value", {})
+                    round_score = round_data.get("score", 0)
+                    
+                    st.markdown(f"""
+                    <div class="round-history-card">
+                        <h4 style="color: #00ff88; margin: 0 0 10px 0;">Round {round_num} - Risk-Adj Score: {round_score:.2f}</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Portfolio Allocation:**")
+                        st.markdown(f"""
+                        <div class="decision-item">💵 Cash: {decisions.get('cash_pct', 25)}%</div>
+                        <div class="decision-item">📊 Shares: {decisions.get('shares_pct', 25)}%</div>
+                        <div class="decision-item">₿ Crypto: {decisions.get('crypto_pct', 25)}%</div>
+                        <div class="decision-item">🏦 Bonds: {decisions.get('bonds_pct', 25)}%</div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.markdown("**Results:**")
+                        st.markdown(f"""
+                        <div class="decision-item">💼 Value: ${pv.get('value', 1000000):,.0f}</div>
+                        <div class="decision-item">📈 Returns: {pv.get('returns', 0):+.1f}%</div>
+                        <div class="decision-item">⚠️ Risk: {pv.get('risk', 50):.0f}/100</div>
+                        """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
 
 def show_crypto_crash_scoreboard(game):
-    """
-    ✅ FIXED: Now uses crypto_portfolio (equity-based ranking)
-    Matches the new crypto game logic from shared_state.py
-    """
     if not game.get("teams"):
         st.info("⏳ Waiting for teams to join...")
         return
 
-    current_round = game.get("current_round", 1)
     scores = []
-    waiting_teams = []
-
     for team_name, team_data in game["teams"].items():
-        # Only show teams that have saved their decision for this round
-        decision_saved_round = team_data.get("decision_saved_round", 0)
-        if decision_saved_round != current_round:
-            waiting_teams.append(team_name)
-            continue
-
-        # ✅ FIXED: Use crypto_portfolio instead of performance
-        cp = team_data.get("crypto_portfolio", {
-            "equity": 1000.0,
-            "total_return_pct": 0.0,
-            "risk_exposure": 0.0,
-            "risk_label": "Low",
-            "liquidations": 0,
-            "leverage": 1
-        })
-
+        cp = team_data.get("crypto_portfolio", {"equity": 1000.0})
         equity = float(cp.get("equity", 1000.0))
-        total_ret = float(cp.get("total_return_pct", 0.0))
-        risk_exposure = float(cp.get("risk_exposure", 0.0))
-        risk_label = cp.get("risk_label", "Low")
-        liquidations = int(cp.get("liquidations", 0))
-        leverage = float(cp.get("leverage", 1))
 
         scores.append({
             "team": team_name,
             "equity": equity,
-            "total_return": total_ret,
-            "risk_exposure": risk_exposure,
-            "risk_label": risk_label,
-            "liquidations": liquidations,
-            "leverage": leverage
+            "data": team_data
         })
 
-    # Show waiting teams
-    if waiting_teams:
-        st.markdown(f"⏳ **Waiting for decisions:** {', '.join(waiting_teams)}")
-        st.markdown("---")
-
-    # ✅ FIXED: Rank by equity (not fake profit score)
     scores.sort(key=lambda x: x["equity"], reverse=True)
 
-    for rank, data in enumerate(scores, 1):
+    for rank, item in enumerate(scores, 1):
+        team_name = item["team"]
+        team_data = item["data"]
+        equity = item["equity"]
+        
         medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"#{rank}"
         card_class = f"rank-{rank}" if rank <= 3 else "scoreboard-card"
         name_color = "#0f2027" if rank <= 3 else "#00ff88"
@@ -351,59 +398,113 @@ def show_crypto_crash_scoreboard(game):
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <div>
                     <span style="font-size:48px;">{medal}</span>
-                    <span class="team-name-display" style="color:{name_color};">{data['team']}</span>
+                    <span class="team-name-display" style="color:{name_color};">{team_name}</span>
                 </div>
-                <div class="metric-value" style="color:{name_color};">{data['equity']:,.0f}</div>
+                <div class="metric-value" style="color:{name_color};">{equity:,.0f}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
+        cp = team_data.get("crypto_portfolio", {})
         cols = st.columns(5)
         
         with cols[0]:
-            equity_color = "#00ff88" if data["equity"] >= 1000 else "#ffa502" if data["equity"] >= 500 else "#ff4757"
+            equity_color = "#00ff88" if equity >= 1000 else "#ffa502" if equity >= 500 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{equity_color};">{data['equity']:,.0f}</div>
+                <div class="metric-value" style="color:{equity_color};">{equity:,.0f}</div>
                 <div class="metric-label">💼 EQUITY</div>
             </div>
             """, unsafe_allow_html=True)
         
         with cols[1]:
-            ret_color = "#00ff88" if data["total_return"] >= 0 else "#ff4757"
+            total_ret = cp.get("total_return_pct", 0)
+            ret_color = "#00ff88" if total_ret >= 0 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{ret_color};">{data['total_return']:+.1f}%</div>
+                <div class="metric-value" style="color:{ret_color};">{total_ret:+.1f}%</div>
                 <div class="metric-label">📈 TOTAL RETURN</div>
             </div>
             """, unsafe_allow_html=True)
         
         with cols[2]:
-            risk_color = "#00ff88" if data["risk_exposure"] < 30 else "#ffa502" if data["risk_exposure"] < 60 else "#ff4757"
+            risk_exposure = cp.get("risk_exposure", 0)
+            risk_label = cp.get("risk_label", "Low")
+            risk_color = "#00ff88" if risk_exposure < 30 else "#ffa502" if risk_exposure < 60 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{risk_color};">{data['risk_label']}</div>
-                <div class="metric-label">⚠️ RISK ({data['risk_exposure']:.0f}/100)</div>
+                <div class="metric-value" style="color:{risk_color};">{risk_label}</div>
+                <div class="metric-label">⚠️ RISK ({risk_exposure:.0f}/100)</div>
             </div>
             """, unsafe_allow_html=True)
         
         with cols[3]:
-            lev_color = "#00ff88" if data["leverage"] <= 2 else "#ffa502" if data["leverage"] <= 3 else "#ff4757"
+            leverage = cp.get("leverage", 1)
+            lev_color = "#00ff88" if leverage <= 2 else "#ffa502" if leverage <= 3 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{lev_color};">{data['leverage']:.0f}x</div>
+                <div class="metric-value" style="color:{lev_color};">{leverage:.0f}x</div>
                 <div class="metric-label">⚡ LEVERAGE</div>
             </div>
             """, unsafe_allow_html=True)
         
         with cols[4]:
-            liq_color = "#00ff88" if data["liquidations"] == 0 else "#ff4757"
+            liquidations = cp.get("liquidations", 0)
+            liq_color = "#00ff88" if liquidations == 0 else "#ff4757"
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value" style="color:{liq_color};">{data['liquidations']}</div>
+                <div class="metric-value" style="color:{liq_color};">{liquidations}</div>
                 <div class="metric-label">🚨 LIQUIDATIONS</div>
             </div>
             """, unsafe_allow_html=True)
+
+        # Round history
+        with st.expander(f"📊 {team_name} - Round History", expanded=False):
+            round_history = team_data.get("round_history", {})
+            
+            if not round_history:
+                st.info("No history available yet - play at least one round")
+            else:
+                sorted_rounds = sorted([int(r) for r in round_history.keys()])
+                
+                for round_num in sorted_rounds:
+                    round_data = round_history.get(str(round_num), {})
+                    
+                    if not round_data:
+                        continue
+                    
+                    decisions = round_data.get("decisions", {})
+                    alloc = decisions.get("allocations", {})
+                    leverage_used = decisions.get("leverage", 1)
+                    cp_round = round_data.get("crypto_portfolio", {})
+                    round_equity = round_data.get("score", 1000)
+                    
+                    st.markdown(f"""
+                    <div class="round-history-card">
+                        <h4 style="color: #00ff88; margin: 0 0 10px 0;">Round {round_num} - Equity: {round_equity:,.0f}</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Allocation:**")
+                        st.markdown(f"""
+                        <div class="decision-item">🟠 BTC: {alloc.get('btc', 40)}%</div>
+                        <div class="decision-item">🔵 ETH: {alloc.get('eth', 30)}%</div>
+                        <div class="decision-item">🟡 DOGE: {alloc.get('doge', 20)}%</div>
+                        <div class="decision-item">🟢 Stable: {alloc.get('stable', 10)}%</div>
+                        <div class="decision-item">⚡ Leverage: {leverage_used}x</div>
+                        """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.markdown("**Results:**")
+                        st.markdown(f"""
+                        <div class="decision-item">💼 Equity: {cp_round.get('equity', 1000):,.0f}</div>
+                        <div class="decision-item">📈 Return: {cp_round.get('last_return_pct', 0):+.1f}%</div>
+                        <div class="decision-item">⚠️ Risk: {cp_round.get('risk_label', 'Low')}</div>
+                        <div class="decision-item">🚨 Liquidations: {cp_round.get('liquidations', 0)}</div>
+                        """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -422,20 +523,16 @@ if st.session_state.get("join_code"):
 if not st.session_state.get("scoreboard_code"):
     all_games = state.get_all_game_sessions()
 
-    # Filter to only running games and sort by created_at (most recent first)
     running_games = []
     for code, g in all_games.items():
-        if g.get("status") == "running":
+        if g.get("status") in ["running", "finished"]:
             running_games.append((code, g, g.get("created_at", "")))
 
-    # Sort by created_at descending (most recent first)
     running_games.sort(key=lambda x: x[2], reverse=True)
 
     if len(running_games) >= 1:
-        # Auto-select the most recent running game
         st.session_state["scoreboard_code"] = running_games[0][0]
     else:
-        # No running games
         st.markdown("""
         <div style="text-align: center; padding: 20px;">
             <h1>📊 LIVE SCOREBOARD</h1>
