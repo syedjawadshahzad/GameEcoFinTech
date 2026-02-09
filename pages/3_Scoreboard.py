@@ -97,23 +97,10 @@ def show_build_country_scoreboard(game):
         st.info("⏳ Waiting for teams to join...")
         return
 
-    # Calculate current scores
+    # Calculate current scores (USE SHARED scoring function)
     scores = []
     for team_name, team_data in game["teams"].items():
-        metrics = team_data.get("metrics", {
-            "gdp": 100.0,
-            "employment": 75.0,
-            "inequality": 50.0,
-            "approval": 50.0
-        })
-
-        score = (
-            metrics.get("gdp", 100) * 0.3 +
-            metrics.get("employment", 75) * 0.25 +
-            (100 - metrics.get("inequality", 50)) * 0.25 +
-            metrics.get("approval", 50) * 0.2
-        )
-
+        score = float(state.compute_build_country_score(team_data))
         scores.append({
             "team": team_name,
             "score": score,
@@ -127,7 +114,7 @@ def show_build_country_scoreboard(game):
         team_name = item["team"]
         team_data = item["data"]
         score = item["score"]
-        
+
         medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"#{rank}"
         card_class = f"rank-{rank}" if rank <= 3 else "scoreboard-card"
         name_color = "#0f2027" if rank <= 3 else "#00ff88"
@@ -144,86 +131,101 @@ def show_build_country_scoreboard(game):
         </div>
         """, unsafe_allow_html=True)
 
-        # Current metrics
+        # Current metrics (+ fiscal)
         metrics = team_data.get("metrics", {})
-        cols = st.columns(4)
+        fiscal = team_data.get("fiscal", {})
+
+        cols = st.columns(6)
         with cols[0]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{metrics.get('gdp', 100):.1f}</div>
+                <div class="metric-value">{float(metrics.get('gdp', 100)):.1f}</div>
                 <div class="metric-label">💰 GDP</div>
             </div>
             """, unsafe_allow_html=True)
         with cols[1]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{metrics.get('employment', 75):.1f}%</div>
+                <div class="metric-value">{float(metrics.get('employment', 75)):.1f}%</div>
                 <div class="metric-label">👷 Employment</div>
             </div>
             """, unsafe_allow_html=True)
         with cols[2]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{metrics.get('inequality', 50):.1f}</div>
+                <div class="metric-value">{float(metrics.get('inequality', 50)):.1f}</div>
                 <div class="metric-label">⚖️ Inequality</div>
             </div>
             """, unsafe_allow_html=True)
         with cols[3]:
             st.markdown(f"""
             <div class="metric-display">
-                <div class="metric-value">{metrics.get('approval', 50):.1f}%</div>
+                <div class="metric-value">{float(metrics.get('approval', 50)):.1f}%</div>
                 <div class="metric-label">❤️ Approval</div>
             </div>
             """, unsafe_allow_html=True)
+        with cols[4]:
+            st.markdown(f"""
+            <div class="metric-display">
+                <div class="metric-value">{float(metrics.get('debt', 0)):.0f}%</div>
+                <div class="metric-label">🏦 Debt %GDP</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[5]:
+            st.markdown(f"""
+            <div class="metric-display">
+                <div class="metric-value">{float(fiscal.get('deficit_pct_gdp', 0)):+.1f}%</div>
+                <div class="metric-label">📉 Deficit %GDP</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # ✅ FIXED: Just read and display history (don't create it)
+        # Round History (now also show fiscal + debt if present)
         with st.expander(f"📊 {team_name} - Round History", expanded=False):
             round_history = team_data.get("round_history", {})
-            
             if not round_history:
                 st.info("No history available yet - play at least one round")
             else:
-                # Sort rounds numerically
                 sorted_rounds = sorted([int(r) for r in round_history.keys()])
-                
                 for round_num in sorted_rounds:
                     round_data = round_history.get(str(round_num), {})
-                    
-                    # Safety check
                     if not round_data:
                         continue
-                    
+
                     decisions = round_data.get("decisions", {})
                     round_metrics = round_data.get("metrics", {})
-                    round_score = round_data.get("score", 0)
-                    
+                    round_fiscal = round_data.get("fiscal", {})
+                    round_score = float(round_data.get("score", 0))
+
                     st.markdown(f"""
                     <div class="round-history-card">
                         <h4 style="color: #00ff88; margin: 0 0 10px 0;">Round {round_num} - Score: {round_score:.1f}</h4>
                     </div>
                     """, unsafe_allow_html=True)
-                    
+
                     col1, col2 = st.columns(2)
-                    
+
                     with col1:
                         st.markdown("**Decisions:**")
                         st.markdown(f"""
                         <div class="decision-item">💵 Tax Rate: {decisions.get('tax_rate', 30)}%</div>
-                        <div class="decision-item">📚 Education: {decisions.get('education_spending', 25)}%</div>
-                        <div class="decision-item">🏗️ Infrastructure: {decisions.get('infrastructure_spending', 25)}%</div>
+                        <div class="decision-item">📚 Education (slider): {decisions.get('education_spending', 25)}</div>
+                        <div class="decision-item">🏗️ Infrastructure (slider): {decisions.get('infrastructure_spending', 25)}</div>
                         <div class="decision-item">🌱 Climate: {decisions.get('climate_policy', 'Moderate')}</div>
                         """, unsafe_allow_html=True)
-                    
+
                     with col2:
                         st.markdown("**Results:**")
                         st.markdown(f"""
-                        <div class="decision-item">💰 GDP: {round_metrics.get('gdp', 100):.1f}</div>
-                        <div class="decision-item">👷 Employment: {round_metrics.get('employment', 75):.1f}%</div>
-                        <div class="decision-item">⚖️ Inequality: {round_metrics.get('inequality', 50):.1f}</div>
-                        <div class="decision-item">❤️ Approval: {round_metrics.get('approval', 50):.1f}%</div>
+                        <div class="decision-item">💰 GDP: {float(round_metrics.get('gdp', 100)):.1f}</div>
+                        <div class="decision-item">👷 Employment: {float(round_metrics.get('employment', 75)):.1f}%</div>
+                        <div class="decision-item">⚖️ Inequality: {float(round_metrics.get('inequality', 50)):.1f}</div>
+                        <div class="decision-item">❤️ Approval: {float(round_metrics.get('approval', 50)):.1f}%</div>
+                        <div class="decision-item">🏦 Debt %GDP: {float(round_metrics.get('debt', 0)):.0f}%</div>
+                        <div class="decision-item">📉 Deficit %GDP: {float(round_fiscal.get('deficit_pct_gdp', 0)):+.1f}%</div>
                         """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
+
 
 
 def show_beat_market_scoreboard(game):

@@ -128,25 +128,18 @@ if game["status"] == "running" and game.get("round_timer_end"):
 
 def show_build_country_results(game, team_name):
     team_data = game["teams"].get(team_name, {})
-    metrics = team_data.get("metrics", {"gdp": 100, "employment": 75, "inequality": 50, "approval": 50})
+    metrics = team_data.get("metrics", {"gdp": 100, "employment": 75, "inequality": 50, "approval": 50, "debt": 0})
+    fiscal = team_data.get("fiscal", {})
 
-    score = (
-        metrics.get("gdp", 100) * 0.3 +
-        metrics.get("employment", 75) * 0.25 +
-        (100 - metrics.get("inequality", 50)) * 0.25 +
-        metrics.get("approval", 50) * 0.2
-    )
+    # ✅ New score (Goldilocks + sustainability)
+    score = float(state.compute_build_country_score(team_data))
 
+    # ✅ Rank all teams using same score
     all_scores = []
     for t_name, t_data in game.get("teams", {}).items():
-        t_metrics = t_data.get("metrics", {"gdp": 100, "employment": 75, "inequality": 50, "approval": 50})
-        t_score = (
-            t_metrics.get("gdp", 100) * 0.3 +
-            t_metrics.get("employment", 75) * 0.25 +
-            (100 - t_metrics.get("inequality", 50)) * 0.25 +
-            t_metrics.get("approval", 50) * 0.2
-        )
+        t_score = float(state.compute_build_country_score(t_data))
         all_scores.append((t_name, t_score))
+
     all_scores.sort(key=lambda x: x[1], reverse=True)
     rank = next((i + 1 for i, (n, _) in enumerate(all_scores) if n == team_name), 1)
 
@@ -157,18 +150,23 @@ def show_build_country_results(game, team_name):
         <h1 style="color: #0f2027; margin: 0;">{medal} Your Final Rank</h1>
         <p style="font-size: 3rem; font-weight: bold; color: #0f2027; margin: 10px 0;">{rank} of {len(all_scores)}</p>
         <p style="font-size: 1.5rem; color: #333;">Score: {score:.1f}</p>
+        <p style="color: #333; margin: 0;">(Balanced policy + strong outcomes + sustainable budget wins)</p>
     </div>
     """, unsafe_allow_html=True)
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
-        st.metric("💰 GDP", f"{metrics.get('gdp', 100):.1f}")
+        st.metric("💰 GDP", f"{float(metrics.get('gdp', 100)):.1f}")
     with col2:
-        st.metric("👷 Employment", f"{metrics.get('employment', 75):.1f}%")
+        st.metric("👷 Employment", f"{float(metrics.get('employment', 75)):.1f}%")
     with col3:
-        st.metric("⚖️ Inequality", f"{metrics.get('inequality', 50):.1f}")
+        st.metric("⚖️ Inequality", f"{float(metrics.get('inequality', 50)):.1f}")
     with col4:
-        st.metric("❤️ Approval", f"{metrics.get('approval', 50):.1f}%")
+        st.metric("❤️ Approval", f"{float(metrics.get('approval', 50)):.1f}%")
+    with col5:
+        st.metric("🏦 Debt %GDP", f"{float(metrics.get('debt', 0)):.0f}%")
+    with col6:
+        st.metric("📉 Deficit %GDP", f"{float(fiscal.get('deficit_pct_gdp', 0)):+.1f}%")
 
 
 def show_beat_market_results(game, team_name):
@@ -268,20 +266,22 @@ def show_build_country_compact(game):
 
     with st.expander("📖 How to Play & Scoring", expanded=False):
         st.markdown("""
-        **🎯 Objective:** Run a successful country by balancing economic growth with social welfare.
+        **🎯 Objective:** Run a successful country by balancing growth, fairness, and fiscal sustainability.
 
-        **📋 Your Decisions:**
-        - **Tax Rate:** Higher taxes reduce inequality but may slow growth
-        - **Education Spending:** Improves long-term employment and reduces inequality
-        - **Infrastructure Spending:** Boosts GDP and employment
-        - **Climate Policy:** Strong policy improves approval but has short-term GDP cost
+        **📋 Your Decisions (sliders):**
+        - **Tax Rate:** raises revenue but can reduce incentives if too high
+        - **Education:** improves productivity/employment and reduces inequality (but costs money)
+        - **Infrastructure:** boosts GDP/employment (but costs money)
+        - **Climate Policy:** affects approval and long-run resilience (with short-run cost)
 
-        **📊 Scoring Formula:**
-        - GDP Growth: **30%**
-        - Employment Rate: **25%**
-        - Low Inequality: **25%** (lower is better)
-        - Public Approval: **20%**
+        **🧠 Scoring (Goldilocks):**
+        - You score best when **policies are balanced** (not extreme low or extreme high).
+        - Outcomes still matter: higher GDP & employment, lower inequality, higher approval.
+        - **Big deficits and high debt reduce your score.**
+
+        ✅ So: **all-10** and **all-50** should both perform badly; **smart middle** wins.
         """)
+
 
     scenario = game.get("game_state", {}).get("current_scenario")
     if scenario:
@@ -322,6 +322,25 @@ def show_build_country_compact(game):
         index=["Weak", "Moderate", "Strong"].index(default_climate),
         disabled=game["round_locked"]
     )
+
+    # ✅ PUT THE BUDGET PREVIEW RIGHT HERE (after sliders/selectbox)
+    edu_pct_gdp = max(0.0, min(10.0, float(edu) * 0.20))
+    infra_pct_gdp = max(0.0, min(8.0, float(infra) * 0.16))
+    other_spend = 18.0
+    climate_cost = 1.0 if climate == "Strong" else 0.0
+    total_spend = other_spend + edu_pct_gdp + infra_pct_gdp + climate_cost
+
+    revenue = 12.0 + 0.45 * float(tax)
+    revenue *= (1.0 - 0.0025 * max(0.0, float(tax) - 40.0))
+    revenue = max(0.0, min(45.0, revenue))
+
+    deficit = total_spend - revenue
+
+    st.markdown("#### 🧾 Budget Preview (Total % of GDP)")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Revenue %GDP", f"{revenue:.1f}%")
+    c2.metric("Spend %GDP", f"{total_spend:.1f}%")
+    c3.metric("Deficit %GDP", f"{deficit:+.1f}%")
 
     if not game["round_locked"]:
         confirm_key = f"confirm_save_build_{game['current_round']}"

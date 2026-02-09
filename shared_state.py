@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import random
 import string
+import math
 
 # Data file paths
 DATA_DIR = "/tmp/economics_games_data"
@@ -273,375 +274,81 @@ def is_round_locked(join_code: str) -> bool:
     return game.get("round_locked", False) if game else False
 
 
-def _store_round_snapshot(join_code: str, round_num: int):
-    """
-    ✅ FIXED: Store a snapshot of current round data for history tracking.
-    Called AFTER round processing but BEFORE advancing to next round.
-    
-    IMPORTANT: Only stores if round_num >= 1 (skips Round 0)
-    FIXED: Removed the decision_saved_round check that was skipping auto-submitted teams
-    """
-    # Don't store Round 0 (game hasn't started yet)
-    if round_num == 0:
-        return
-    
-    game = get_game_session(join_code)
-    if not game:
-        return
-    
-    for team_name, team_data in game.get("teams", {}).items():
-        if "round_history" not in team_data:
-            team_data["round_history"] = {}
-        
-        # Only store if not already stored for this round
-        if str(round_num) in team_data["round_history"]:
-            continue
-        
-        # ✅ REMOVED: The check that was preventing auto-submitted teams from being stored
-        # Old code: if decision_saved_round < round_num: continue
-        
-        decisions = team_data.get("decisions", {})
-        
-        if game["game_type"] == "build_country":
-            metrics = team_data.get("metrics", {
-                "gdp": 100.0,
-                "employment": 75.0,
-                "inequality": 50.0,
-                "approval": 50.0
-            })
-            score = (
-                metrics.get("gdp", 100) * 0.3 +
-                metrics.get("employment", 75) * 0.25 +
-                (100 - metrics.get("inequality", 50)) * 0.25 +
-                metrics.get("approval", 50) * 0.2
-            )
-            
-            # Deep copy to prevent reference issues
-            team_data["round_history"][str(round_num)] = {
-                "decisions": {
-                    "tax_rate": decisions.get("tax_rate", 30),
-                    "education_spending": decisions.get("education_spending", 25),
-                    "infrastructure_spending": decisions.get("infrastructure_spending", 25),
-                    "climate_policy": decisions.get("climate_policy", "Moderate")
-                },
-                "metrics": {
-                    "gdp": metrics.get("gdp", 100.0),
-                    "employment": metrics.get("employment", 75.0),
-                    "inequality": metrics.get("inequality", 50.0),
-                    "approval": metrics.get("approval", 50.0)
-                },
-                "score": score
-            }
-            
-        elif game["game_type"] == "beat_market":
-            portfolio = team_data.get("portfolio", {})
-            portfolio_value = team_data.get("portfolio_value", {})
-            returns = float(portfolio_value.get("returns", 0.0))
-            risk = float(portfolio_value.get("risk", 50.0))
-            score = (returns / max(1.0, risk)) * 100.0 if risk > 0 else returns
-            
-            team_data["round_history"][str(round_num)] = {
-                "decisions": {
-                    "cash_pct": portfolio.get("cash_pct", 25),
-                    "shares_pct": portfolio.get("shares_pct", 25),
-                    "crypto_pct": portfolio.get("crypto_pct", 25),
-                    "bonds_pct": portfolio.get("bonds_pct", 25)
-                },
-                "portfolio_value": {
-                    "value": portfolio_value.get("value", 1000000),
-                    "returns": returns,
-                    "risk": risk,
-                    "esg": portfolio_value.get("esg", 50.0)
-                },
-                "score": score
-            }
-            
-        elif game["game_type"] == "crypto_crash":
-            cp = team_data.get("crypto_portfolio", {})
-            alloc = decisions.get("allocations", {})
-            
-            team_data["round_history"][str(round_num)] = {
-                "decisions": {
-                    "allocations": {
-                        "btc": alloc.get("btc", 40),
-                        "eth": alloc.get("eth", 30),
-                        "doge": alloc.get("doge", 20),
-                        "stable": alloc.get("stable", 10)
-                    },
-                    "leverage": decisions.get("leverage", 1)
-                },
-                "crypto_portfolio": {
-                    "equity": cp.get("equity", 1000.0),
-                    "last_return_pct": cp.get("last_return_pct", 0.0),
-                    "total_return_pct": cp.get("total_return_pct", 0.0),
-                    "risk_exposure": cp.get("risk_exposure", 0.0),
-                    "risk_label": cp.get("risk_label", "Low"),
-                    "liquidations": cp.get("liquidations", 0)
-                },
-                "score": float(cp.get("equity", 1000.0))
-            }
-    
-    # Save back
-    games = load_json(GAMES_FILE)
-    games[join_code] = game
-    save_json(GAMES_FILE, games)
-
-
-def advance_round(join_code: str):
-    """
-    Advance to next round:
-    1) Auto-submit missing decisions (use previous round's choices)
-    2) Process current round outcomes
-    3) ✅ STORE ROUND HISTORY SNAPSHOT (only if round >= 1)
-    4) Generate next scenario/event/indicators + narrative hints
-    5) Persist updated state
-    """
-    game = get_game_session(join_code)
-    if not game:
-        return
-
-    # Auto-submit missing decisions before processing
-    current_round = game.get("current_round", 1)
-    
-    for team_name, team_data in game.get("teams", {}).items():
-        decision_saved_round = team_data.get("decision_saved_round", 0)
-        
-        # If team hasn't saved decision for current round
-        if decision_saved_round != current_round:
-            # Get their previous decisions (or use defaults)
-            game_type = game.get("game_type")
-            
-            if game_type == "build_country":
-                prev_decisions = team_data.get("decisions", {})
-                default_decisions = {
-                    "tax_rate": prev_decisions.get("tax_rate", 30),
-                    "education_spending": prev_decisions.get("education_spending", 25),
-                    "infrastructure_spending": prev_decisions.get("infrastructure_spending", 25),
-                    "climate_policy": prev_decisions.get("climate_policy", "Moderate")
-                }
-                team_data["decisions"] = default_decisions
-                team_data["decision_saved_round"] = current_round
-                team_data["auto_submitted"] = True
-                
-            elif game_type == "beat_market":
-                prev_portfolio = team_data.get("portfolio", {})
-                default_portfolio = {
-                    "cash_pct": prev_portfolio.get("cash_pct", 25),
-                    "shares_pct": prev_portfolio.get("shares_pct", 25),
-                    "crypto_pct": prev_portfolio.get("crypto_pct", 25),
-                    "bonds_pct": prev_portfolio.get("bonds_pct", 25)
-                }
-                team_data["portfolio"] = default_portfolio
-                team_data["decision_saved_round"] = current_round
-                team_data["auto_submitted"] = True
-                
-            elif game_type == "crypto_crash":
-                prev_decisions = team_data.get("decisions", {})
-                prev_alloc = prev_decisions.get("allocations", {}) if isinstance(prev_decisions.get("allocations"), dict) else {}
-                
-                default_decisions = {
-                    "allocations": {
-                        "btc": prev_alloc.get("btc", 40),
-                        "eth": prev_alloc.get("eth", 30),
-                        "doge": prev_alloc.get("doge", 20),
-                        "stable": prev_alloc.get("stable", 10)
-                    },
-                    "leverage": prev_decisions.get("leverage", 1)
-                }
-                team_data["decisions"] = default_decisions
-                team_data["decision_saved_round"] = current_round
-                team_data["auto_submitted"] = True
-
-    # Save auto-submitted decisions
-    games = load_json(GAMES_FILE)
-    games[join_code] = game
-    save_json(GAMES_FILE, games)
-
-    # Process current round (scoreboard)
-    process_current_round(join_code)
-
-    # ✅ FIXED: Store round history AFTER processing, BEFORE advancing (skips Round 0)
-    _store_round_snapshot(join_code, current_round)
-
-    # Reload after processing
-    game = get_game_session(join_code)
-    if not game:
-        return
-
-    game.setdefault("game_state", {})
-
-    if game["game_type"] == "build_country":
-        scenarios = [
-            {
-                "name": "🌪️ Global Recession",
-                "description": (
-                    "A worldwide recession hits. Exports fall, unemployment rises, and investors pull back. "
-                    "Tax revenue shrinks while public pressure for support grows. "
-                    "Hint: cut wasteful spending, boost safety nets, and invest in job programs."
-                )
-            },
-            {
-                "name": "💡 Tech Boom",
-                "description": (
-                    "A wave of innovation boosts productivity and attracts foreign investment. "
-                    "New industries emerge and wages rise, but inequality may grow. "
-                    "Hint: invest in education, infrastructure, and ensure fair access to opportunities."
-                )
-            },
-            {
-                "name": "🌋 Natural Disaster",
-                "description": (
-                    "A major disaster destroys infrastructure and disrupts production. "
-                    "Housing shortages and supply chain issues cause prices to rise. "
-                    "Hint: prioritize emergency spending, rebuild infrastructure, and stabilize food/energy supply."
-                )
-            },
-            {
-                "name": "🌍 Climate Crisis",
-                "description": (
-                    "Rising pollution and extreme weather damage crops, health, and long-term growth. "
-                    "International pressure increases and investors demand sustainability reforms. "
-                    "Hint: invest in clean energy, enforce regulations, and improve resilience planning."
-                )
-            },
-            {
-                "name": "📈 Trade Agreement",
-                "description": (
-                    "A new trade deal opens foreign markets and lowers tariffs. "
-                    "Exports surge, but local industries face tougher competition. "
-                    "Hint: support key industries, invest in logistics, and encourage competitive innovation."
-                )
-            },
-            {
-                "name": "👥 Social Movement",
-                "description": (
-                    "Large protests demand fair wages, equality, and better public services. "
-                    "Public trust drops, but reforms could strengthen stability long-term. "
-                    "Hint: increase social investment, reduce inequality, and improve governance transparency."
-                )
-            },
-        ]
-        game["game_state"]["current_scenario"] = random.choice(scenarios)
-
-    elif game["game_type"] == "beat_market":
-        events = [
-            {
-                "name": "📈 Bull Market Rally",
-                "description": (
-                    "Markets surge as optimism spreads. Stocks rise rapidly and speculative trading increases. "
-                    "Valuations may become inflated. "
-                    "Hint: ride momentum, but diversify and set stop-losses in case of reversal."
-                )
-            },
-            {
-                "name": "🏦 Interest Rate Hike",
-                "description": (
-                    "The central bank raises interest rates to fight inflation. Borrowing becomes expensive, "
-                    "slowing consumer spending and business expansion. "
-                    "Hint: shift toward defensive sectors (banks, utilities) and avoid highly leveraged companies."
-                )
-            },
-            {
-                "name": "💥 Company Scandal",
-                "description": (
-                    "A major firm is caught in fraud and accounting manipulation. Confidence drops and investors panic-sell. "
-                    "The whole sector may suffer. "
-                    "Hint: avoid risky firms, increase diversification, and consider safer assets temporarily."
-                )
-            },
-            {
-                "name": "🚀 Tech Breakthrough",
-                "description": (
-                    "A revolutionary AI breakthrough reshapes the tech landscape. "
-                    "Tech stocks rally, but competition increases and older firms risk becoming obsolete. "
-                    "Hint: invest in innovators, but avoid chasing hype without fundamentals."
-                )
-            },
-            {
-                "name": "📉 Market Correction",
-                "description": (
-                    "After a long rally, markets drop sharply as traders take profits. "
-                    "Panic spreads, but strong companies remain valuable. "
-                    "Hint: hold quality assets, buy undervalued stocks cautiously, and avoid emotional selling."
-                )
-            },
-            {
-                "name": "🌍 Climate Regulation",
-                "description": (
-                    "Governments introduce strict climate laws. Polluting industries face higher costs, "
-                    "while renewable energy gains momentum. "
-                    "Hint: reduce exposure to fossil-heavy firms and consider clean energy or ESG leaders."
-                )
-            },
-        ]
-        game["game_state"]["current_event"] = random.choice(events)
-
-    elif game["game_type"] == "crypto_crash":
-        indicators = {
-            "sentiment": random.randint(20, 80),
-            "volume": random.randint(30, 90),
-            "hype": random.randint(25, 95),
-            "price": round(random.uniform(8000, 15000), 2),
-            "price_change": round(random.uniform(-20, 20), 2),
-        }
-
-        # Sentiment
-        if indicators["sentiment"] < 35:
-            sentiment_text = "Fear dominates the market. Traders are pessimistic and selling pressure is rising."
-            sentiment_hint = "Reduce risk: more Stablecoin, less leverage, or wait for stability."
-        elif indicators["sentiment"] > 65:
-            sentiment_text = "Optimism is high. Traders believe prices will keep rising."
-            sentiment_hint = "Enjoy gains, but consider taking profits and avoid extreme leverage."
-        else:
-            sentiment_text = "Sentiment is mixed. Traders are uncertain and waiting for direction."
-            sentiment_hint = "Diversify across BTC/ETH and keep some Stablecoin."
-
-        # Volume
-        if indicators["volume"] > 75:
-            volume_text = "Trading volume is extremely high — big players may be moving money."
-            volume_hint = "High volume can mean breakout OR crash. Use lower leverage if unsure."
-        elif indicators["volume"] < 40:
-            volume_text = "Trading volume is weak — the market is thin and jumpy."
-            volume_hint = "Thin markets crash easily. Hold more Stablecoin and avoid leverage."
-        else:
-            volume_text = "Trading volume is normal — steady but cautious activity."
-            volume_hint = "Follow the trend, but keep protection (some Stablecoin)."
-
-        # Hype
-        if indicators["hype"] > 75:
-            hype_text = "Social media hype is exploding. Meme coins can spike — and crash — fast."
-            hype_hint = "Be careful with DOGE + leverage. That combo is highest risk."
-        elif indicators["hype"] < 40:
-            hype_text = "Hype is low. The market is quiet and attention is fading."
-            hype_hint = "Low hype means fewer pumps, but also less buying demand."
-        else:
-            hype_text = "Hype is moderate. Speculation exists, but it hasn't reached mania levels."
-            hype_hint = "Balanced conditions: focus on BTC/ETH and manage leverage."
-
-        market_story = f"{sentiment_text} {volume_text} {hype_text}"
-
-        game["game_state"]["indicators"] = indicators
-        game["game_state"]["market_story"] = market_story
-        game["game_state"]["indicator_notes"] = {
-            "sentiment": {"text": sentiment_text, "hint": sentiment_hint},
-            "volume": {"text": volume_text, "hint": volume_hint},
-            "hype": {"text": hype_text, "hint": hype_hint},
-        }
-
-    update_game_session(join_code, {
-        "current_round": game.get("current_round", 0) + 1,
-        "round_locked": False,
-        "round_timer_end": None,
-        "game_state": game["game_state"]
-    })
-
-
 # ============================================================================
 # ROUND PROCESSING (SCOREBOARD MECHANICS)
 # ============================================================================
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def _gauss_score(x: float, mu: float, sigma: float) -> float:
+    """
+    Returns 0..1, peaks at x=mu, penalizes both low and high values.
+    """
+    sigma = float(sigma)
+    if sigma <= 0:
+        return 0.0
+    z = (float(x) - float(mu)) / sigma
+    return float(math.exp(-0.5 * z * z))
+
+
+def compute_build_country_score(team_data: dict) -> float:
+    """
+    Goldilocks score:
+    - Extremes (very low or very high tax/spending sliders) score poorly.
+    - Best scores come from "reasonable middle" policy + good macro outcomes.
+    - Sustainability penalty: deficit & debt reduce score.
+
+    Returns score in 0..100 range (clamped).
+    """
+    decisions = team_data.get("decisions", {}) or {}
+    metrics = team_data.get("metrics", {
+        "gdp": 100.0,
+        "employment": 75.0,
+        "inequality": 50.0,
+        "approval": 50.0,
+        "debt": 0.0,
+    })
+    fiscal = team_data.get("fiscal", {}) or {}
+
+    tax = float(decisions.get("tax_rate", 30.0))
+    edu = float(decisions.get("education_spending", 25.0))
+    infra = float(decisions.get("infrastructure_spending", 25.0))
+
+    # 1) Policy "Goldilocks" fits (0..1)
+    tax_fit = _gauss_score(tax, mu=30.0, sigma=25.0)
+    edu_fit = _gauss_score(edu, mu=25.0, sigma=25.0)
+    infra_fit = _gauss_score(infra, mu=25.0, sigma=25.0)
+
+    policy_fit = (tax_fit + edu_fit + infra_fit) / 3.0
+
+    # 2) Outcomes (0..1) from metrics
+    gdp = float(metrics.get("gdp", 100.0))
+    emp = float(metrics.get("employment", 75.0))
+    ineq = float(metrics.get("inequality", 50.0))
+    appr = float(metrics.get("approval", 50.0))
+
+    gdp_s = _clamp((gdp - 60.0) / 140.0, 0.0, 1.0)           # 60..200
+    emp_s = _clamp((emp - 40.0) / 60.0, 0.0, 1.0)            # 40..100
+    ineq_s = _clamp((100.0 - ineq) / 100.0, 0.0, 1.0)        # lower inequality better
+    appr_s = _clamp(appr / 100.0, 0.0, 1.0)
+
+    outcomes = 0.30 * gdp_s + 0.25 * emp_s + 0.25 * ineq_s + 0.20 * appr_s
+
+    # 3) Sustainability penalty (0..1)
+    debt = float(metrics.get("debt", 0.0))  # % of GDP (toy)
+    deficit = float(fiscal.get("deficit_pct_gdp", 0.0))
+
+    debt_pen = _clamp(debt / 120.0, 0.0, 1.0)               # 120% debt is "very bad"
+    deficit_pen = _clamp(max(0.0, deficit) / 8.0, 0.0, 1.0) # 8% deficit "very bad"
+    sustainability_pen = 0.40 * debt_pen + 0.20 * deficit_pen
+
+    # Final score: reward outcomes + calibrated policy, penalize fiscal stress
+    policy_multiplier = 0.90 + 0.20 * policy_fit   # range: 0.90 .. 1.10
+    raw = 100.0 * outcomes * policy_multiplier * (1.0 - 0.05 * sustainability_pen)
+
+    return float(_clamp(raw, 0.0, 100.0))
 
 
 def process_current_round(join_code: str):
@@ -675,75 +382,168 @@ def process_current_round(join_code: str):
 
 
 def _process_build_country_round(game: dict):
-    """Build-country toy mechanics with scenario shock."""
+    """
+    Realistic-ish build-country engine + fiscal constraint.
+
+    Interpretation:
+    - tax_rate: 0..50 (tax effort proxy)
+    - education_spending slider 0..50 maps to edu_pct_gdp: 0..10% of GDP
+    - infrastructure_spending slider 0..50 maps to infra_pct_gdp: 0..8% of GDP
+    - baseline "other" spending (% GDP) represents welfare/health/admin obligations
+    - deficit adds to debt (% GDP)
+    """
     scenario = game.get("game_state", {}).get("current_scenario", {})
     scenario_name = (scenario.get("name") or "").lower()
 
+    # Scenario shocks (small)
     gdp_shock = 0.0
     emp_shock = 0.0
     appr_shock = 0.0
     ineq_shock = 0.0
 
     if "recession" in scenario_name:
-        gdp_shock -= 2.5
-        emp_shock -= 2.0
-        appr_shock -= 1.0
+        gdp_shock -= 1.8
+        emp_shock -= 1.4
+        appr_shock -= 0.8
     elif "tech" in scenario_name or "boom" in scenario_name:
-        gdp_shock += 2.0
-        emp_shock += 1.0
-        appr_shock += 1.0
+        gdp_shock += 1.4
+        emp_shock += 0.8
+        appr_shock += 0.7
+        ineq_shock += 0.6
     elif "disaster" in scenario_name:
-        gdp_shock -= 1.5
-        appr_shock -= 2.0
+        gdp_shock -= 1.2
+        appr_shock -= 1.5
     elif "climate" in scenario_name:
-        appr_shock -= 1.0
-        ineq_shock += 1.0
+        appr_shock -= 0.6
+        ineq_shock += 0.6
     elif "trade" in scenario_name:
-        gdp_shock += 1.5
-        emp_shock += 1.0
+        gdp_shock += 1.1
+        emp_shock += 0.6
     elif "social" in scenario_name:
-        appr_shock -= 0.5
-        ineq_shock += 2.0
+        appr_shock -= 0.4
+        ineq_shock += 1.2
 
     for _, team_data in game.get("teams", {}).items():
-        decisions = team_data.get("decisions", {})
+        decisions = team_data.get("decisions", {}) or {}
 
         tax = float(decisions.get("tax_rate", 30))
-        edu = float(decisions.get("education_spending", 25))
-        infra = float(decisions.get("infrastructure_spending", 25))
+        edu_slider = float(decisions.get("education_spending", 25))
+        infra_slider = float(decisions.get("infrastructure_spending", 25))
         climate = decisions.get("climate_policy", "Moderate")
 
         metrics = team_data.get("metrics", {
             "gdp": 100.0,
             "employment": 75.0,
             "inequality": 50.0,
-            "approval": 50.0
+            "approval": 50.0,
+            "debt": 0.0,   # %GDP
         })
 
-        gdp_delta = (infra - 25) * 0.25 + (edu - 25) * 0.12 - max(0, tax - 30) * 0.18
-        emp_delta = (infra - 25) * 0.30 + (edu - 25) * 0.08 - max(0, tax - 35) * 0.12
-        ineq_delta = -(edu - 25) * 0.25 - max(0, tax - 30) * 0.15 + max(0, 25 - tax) * 0.10
-        appr_delta = (gdp_delta * 0.5) + (emp_delta * 0.6) - (ineq_delta * 0.3)
+        # Map sliders to realistic % of GDP
+        edu_pct_gdp = _clamp(edu_slider * 0.20, 0.0, 10.0)     # 0..10% GDP
+        infra_pct_gdp = _clamp(infra_slider * 0.16, 0.0, 8.0)  # 0..8% GDP
 
+        # Baseline obligations (% GDP)
+        other_spend_pct_gdp = 18.0
+
+        # Climate policy: small fiscal add-on + credibility
+        climate_cost_pct_gdp = 0.0
+        climate_growth_bonus = 0.0
+        climate_approval_bonus = 0.0
         if climate == "Strong":
-            gdp_delta -= 0.8
-            appr_delta += 1.4
+            climate_cost_pct_gdp = 1.0
+            climate_growth_bonus = 0.25
+            climate_approval_bonus = 0.6
         elif climate == "Weak":
-            appr_delta -= 0.8
+            climate_growth_bonus = -0.15
+            climate_approval_bonus = -0.4
+
+        total_spend_pct_gdp = other_spend_pct_gdp + edu_pct_gdp + infra_pct_gdp + climate_cost_pct_gdp
+
+        # Revenue as % of GDP (toy calibration)
+        # tax=30 -> ~25.5%; tax=50 -> ~34.5%; tax=10 -> ~16.5%
+        revenue_pct_gdp = 12.0 + 0.45 * tax
+        revenue_pct_gdp *= (1.0 - 0.0025 * max(0.0, tax - 40.0))  # mild high-tax drag
+        revenue_pct_gdp = _clamp(revenue_pct_gdp, 0.0, 45.0)
+
+        deficit_pct_gdp = total_spend_pct_gdp - revenue_pct_gdp  # + = deficit, - = surplus
+
+        # Debt dynamics (%GDP)
+        debt = float(metrics.get("debt", 0.0))
+        interest = 0.04
+        debt = max(0.0, debt * (1.0 + interest) + deficit_pct_gdp)
+
+        deficit_stress = max(0.0, deficit_pct_gdp)
+        debt_burden = _clamp(debt / 2.0, 0.0, 100.0)  # 200% debt -> 100
+
+        # Investment effects (anchored near typical levels)
+        infra_effect = (infra_pct_gdp - 3.0) * 0.55   # ~3% GDP typical
+        edu_effect = (edu_pct_gdp - 5.0) * 0.35       # ~5% GDP typical
+
+        # Tax distortion above ~30
+        tax_drag = max(0.0, tax - 20.0) * 0.10
+
+        # >>> Stronger fiscal drags so extremes don't dominate (key)
+        gdp_delta = (
+            infra_effect + edu_effect
+            - tax_drag
+            - (0.010 * debt_burden)
+            - (0.050 * deficit_stress)
+            + climate_growth_bonus
+        )
+        emp_delta = (
+            (infra_effect * 0.90) + (edu_effect * 0.55)
+            - (tax_drag * 0.70)
+            - (0.007 * debt_burden)
+            - (0.020 * deficit_stress)
+        )
+
+        ineq_delta = (
+            -0.50 * (edu_pct_gdp - 5.0)
+            -0.05 * max(0.0, tax - 25.0)
+            +0.10 * max(0.0, 20.0 - tax)
+        )
+
+        appr_delta = (
+            0.45 * gdp_delta +
+            0.55 * emp_delta -
+            0.25 * ineq_delta +
+            climate_approval_bonus
+            - 0.20 * deficit_stress
+            - 0.12 * (debt_burden / 10.0)
+        )
 
         new_metrics = {
-            "gdp": metrics["gdp"] + gdp_delta + gdp_shock,
-            "employment": metrics["employment"] + emp_delta + emp_shock,
-            "inequality": metrics["inequality"] + ineq_delta + ineq_shock,
-            "approval": metrics["approval"] + appr_delta + appr_shock
+            "gdp": float(metrics["gdp"]) + gdp_delta + gdp_shock,
+            "employment": float(metrics["employment"]) + emp_delta + emp_shock,
+            "inequality": float(metrics["inequality"]) + ineq_delta + ineq_sh_toggle(ineq_shock),
+            "approval": float(metrics["approval"]) + appr_delta + appr_shock,
+            "debt": float(debt),
         }
 
         new_metrics["gdp"] = _clamp(new_metrics["gdp"], 60, 200)
         new_metrics["employment"] = _clamp(new_metrics["employment"], 40, 100)
         new_metrics["inequality"] = _clamp(new_metrics["inequality"], 0, 100)
         new_metrics["approval"] = _clamp(new_metrics["approval"], 0, 100)
+        new_metrics["debt"] = _clamp(new_metrics["debt"], 0, 250)
+
+        # Fiscal diagnostics (used by scoring + can be shown in UI)
+        team_data["fiscal"] = {
+            "edu_pct_gdp": round(edu_pct_gdp, 2),
+            "infra_pct_gdp": round(infra_pct_gdp, 2),
+            "other_spend_pct_gdp": round(other_spend_pct_gdp, 2),
+            "total_spend_pct_gdp": round(total_spend_pct_gdp, 2),
+            "revenue_pct_gdp": round(revenue_pct_gdp, 2),
+            "deficit_pct_gdp": round(deficit_pct_gdp, 2),
+            "debt_pct_gdp": round(new_metrics["debt"], 2),
+        }
 
         team_data["metrics"] = new_metrics
+
+
+def ineq_sh_toggle(x: float) -> float:
+    # Kept as a simple hook in case you want later scenario-specific inequality amplification.
+    return float(x)
 
 
 def _process_beat_market_round(game: dict):
@@ -819,7 +619,7 @@ def _process_beat_market_round(game: dict):
 
 def _process_crypto_crash_round(game: dict):
     """
-    UPDATED CRYPTO GAME (student-friendly):
+    Student-friendly crypto game:
     - 4 assets: BTC, ETH, DOGE, STABLE
     - Teams choose allocations (%) + leverage (1x..5x)
     - Uses indicators to generate asset returns each round
@@ -987,6 +787,346 @@ def _process_crypto_crash_round(game: dict):
 
 
 # ============================================================================
+# ROUND HISTORY SNAPSHOTS
+# ============================================================================
+
+def _store_round_snapshot(join_code: str, round_num: int):
+    """
+    Store a snapshot of current round data for history tracking.
+    Called AFTER round processing but BEFORE advancing to next round.
+    IMPORTANT: Only stores if round_num >= 1 (skips Round 0)
+    """
+    if round_num == 0:
+        return
+
+    game = get_game_session(join_code)
+    if not game:
+        return
+
+    for _, team_data in game.get("teams", {}).items():
+        team_data.setdefault("round_history", {})
+
+        if str(round_num) in team_data["round_history"]:
+            continue
+
+        decisions = team_data.get("decisions", {}) or {}
+
+        if game["game_type"] == "build_country":
+            metrics = team_data.get("metrics", {
+                "gdp": 100.0,
+                "employment": 75.0,
+                "inequality": 50.0,
+                "approval": 50.0,
+                "debt": 0.0,
+            })
+
+            score = compute_build_country_score(team_data)
+
+            team_data["round_history"][str(round_num)] = {
+                "decisions": {
+                    "tax_rate": decisions.get("tax_rate", 30),
+                    "education_spending": decisions.get("education_spending", 25),
+                    "infrastructure_spending": decisions.get("infrastructure_spending", 25),
+                    "climate_policy": decisions.get("climate_policy", "Moderate"),
+                },
+                "metrics": {
+                    "gdp": float(metrics.get("gdp", 100.0)),
+                    "employment": float(metrics.get("employment", 75.0)),
+                    "inequality": float(metrics.get("inequality", 50.0)),
+                    "approval": float(metrics.get("approval", 50.0)),
+                    "debt": float(metrics.get("debt", 0.0)),
+                },
+                "fiscal": dict(team_data.get("fiscal", {}) or {}),
+                "score": float(score),
+            }
+
+        elif game["game_type"] == "beat_market":
+            portfolio = team_data.get("portfolio", {})
+            portfolio_value = team_data.get("portfolio_value", {})
+            returns = float(portfolio_value.get("returns", 0.0))
+            risk = float(portfolio_value.get("risk", 50.0))
+            score = (returns / max(1.0, risk)) * 100.0 if risk > 0 else returns
+
+            team_data["round_history"][str(round_num)] = {
+                "decisions": {
+                    "cash_pct": portfolio.get("cash_pct", 25),
+                    "shares_pct": portfolio.get("shares_pct", 25),
+                    "crypto_pct": portfolio.get("crypto_pct", 25),
+                    "bonds_pct": portfolio.get("bonds_pct", 25)
+                },
+                "portfolio_value": {
+                    "value": portfolio_value.get("value", 1000000),
+                    "returns": returns,
+                    "risk": risk,
+                    "esg": portfolio_value.get("esg", 50.0)
+                },
+                "score": score
+            }
+
+        elif game["game_type"] == "crypto_crash":
+            cp = team_data.get("crypto_portfolio", {})
+            alloc = decisions.get("allocations", {}) if isinstance(decisions.get("allocations", {}), dict) else {}
+
+            team_data["round_history"][str(round_num)] = {
+                "decisions": {
+                    "allocations": {
+                        "btc": alloc.get("btc", 40),
+                        "eth": alloc.get("eth", 30),
+                        "doge": alloc.get("doge", 20),
+                        "stable": alloc.get("stable", 10)
+                    },
+                    "leverage": decisions.get("leverage", 1)
+                },
+                "crypto_portfolio": {
+                    "equity": cp.get("equity", 1000.0),
+                    "last_return_pct": cp.get("last_return_pct", 0.0),
+                    "total_return_pct": cp.get("total_return_pct", 0.0),
+                    "risk_exposure": cp.get("risk_exposure", 0.0),
+                    "risk_label": cp.get("risk_label", "Low"),
+                    "liquidations": cp.get("liquidations", 0)
+                },
+                "score": float(cp.get("equity", 1000.0))
+            }
+
+    games = load_json(GAMES_FILE)
+    games[join_code] = game
+    save_json(GAMES_FILE, games)
+
+
+def advance_round(join_code: str):
+    """
+    Advance to next round:
+    1) Auto-submit missing decisions (use previous round's choices)
+    2) Process current round outcomes
+    3) Store round history snapshot (only if round >= 1)
+    4) Generate next scenario/event/indicators + narrative hints
+    5) Persist updated state
+    """
+    game = get_game_session(join_code)
+    if not game:
+        return
+
+    current_round = game.get("current_round", 1)
+
+    # Auto-submit missing decisions before processing
+    for _, team_data in game.get("teams", {}).items():
+        decision_saved_round = team_data.get("decision_saved_round", 0)
+
+        if decision_saved_round != current_round:
+            game_type = game.get("game_type")
+
+            if game_type == "build_country":
+                prev = team_data.get("decisions", {}) or {}
+                team_data["decisions"] = {
+                    "tax_rate": prev.get("tax_rate", 30),
+                    "education_spending": prev.get("education_spending", 25),
+                    "infrastructure_spending": prev.get("infrastructure_spending", 25),
+                    "climate_policy": prev.get("climate_policy", "Moderate")
+                }
+                team_data["decision_saved_round"] = current_round
+                team_data["auto_submitted"] = True
+
+            elif game_type == "beat_market":
+                prev = team_data.get("portfolio", {}) or {}
+                team_data["portfolio"] = {
+                    "cash_pct": prev.get("cash_pct", 25),
+                    "shares_pct": prev.get("shares_pct", 25),
+                    "crypto_pct": prev.get("crypto_pct", 25),
+                    "bonds_pct": prev.get("bonds_pct", 25)
+                }
+                team_data["decision_saved_round"] = current_round
+                team_data["auto_submitted"] = True
+
+            elif game_type == "crypto_crash":
+                prev = team_data.get("decisions", {}) or {}
+                prev_alloc = prev.get("allocations", {}) if isinstance(prev.get("allocations", {}), dict) else {}
+                team_data["decisions"] = {
+                    "allocations": {
+                        "btc": prev_alloc.get("btc", 40),
+                        "eth": prev_alloc.get("eth", 30),
+                        "doge": prev_alloc.get("doge", 20),
+                        "stable": prev_alloc.get("stable", 10)
+                    },
+                    "leverage": prev.get("leverage", 1)
+                }
+                team_data["decision_saved_round"] = current_round
+                team_data["auto_submitted"] = True
+
+    # Save auto-submitted decisions
+    games = load_json(GAMES_FILE)
+    games[join_code] = game
+    save_json(GAMES_FILE, games)
+
+    # Process current round
+    process_current_round(join_code)
+
+    # Store snapshot after processing
+    _store_round_snapshot(join_code, current_round)
+
+    # Reload after processing
+    game = get_game_session(join_code)
+    if not game:
+        return
+
+    game.setdefault("game_state", {})
+
+    if game["game_type"] == "build_country":
+        scenarios = [
+            {
+                "name": "🌪️ Global Recession",
+                "description": (
+                    "A worldwide recession hits. Exports fall, unemployment rises, and investors pull back. "
+                    "Tax revenue shrinks while pressure for support grows. "
+                    "Hint: protect jobs, prioritize targeted relief, keep debt sustainable."
+                )
+            },
+            {
+                "name": "💡 Tech Boom",
+                "description": (
+                    "Innovation boosts productivity and attracts investment. "
+                    "Wages rise, but inequality may grow. "
+                    "Hint: invest in education/infrastructure; watch inequality and fiscal balance."
+                )
+            },
+            {
+                "name": "🌋 Natural Disaster",
+                "description": (
+                    "Infrastructure is damaged and production disrupted. "
+                    "Hint: rebuild, but deficits can surge—manage debt carefully."
+                )
+            },
+            {
+                "name": "🌍 Climate Crisis",
+                "description": (
+                    "Extreme weather harms health, crops, and long-term growth. "
+                    "Hint: climate action helps credibility but has fiscal costs."
+                )
+            },
+            {
+                "name": "📈 Trade Agreement",
+                "description": (
+                    "New trade deal opens markets. Exports surge, local firms face competition. "
+                    "Hint: invest in logistics and workforce skills."
+                )
+            },
+            {
+                "name": "👥 Social Movement",
+                "description": (
+                    "Protests demand equality and better services. Trust falls, but reforms can help long-term. "
+                    "Hint: reduce inequality without exploding the deficit."
+                )
+            },
+        ]
+        game["game_state"]["current_scenario"] = random.choice(scenarios)
+
+    elif game["game_type"] == "beat_market":
+        events = [
+            {
+                "name": "📈 Bull Market Rally",
+                "description": (
+                    "Markets surge with optimism. Stocks rise fast, speculation increases. "
+                    "Hint: ride momentum, diversify, manage risk."
+                )
+            },
+            {
+                "name": "🏦 Interest Rate Hike",
+                "description": (
+                    "Rates rise to fight inflation. Borrowing costs increase, slowing demand. "
+                    "Hint: tilt defensive and reduce risk."
+                )
+            },
+            {
+                "name": "💥 Company Scandal",
+                "description": (
+                    "A major firm is caught in fraud. Confidence drops and investors panic-sell. "
+                    "Hint: diversify and avoid concentration."
+                )
+            },
+            {
+                "name": "🚀 Tech Breakthrough",
+                "description": (
+                    "AI breakthrough reshapes the tech landscape. Tech rallies but disruption risk rises. "
+                    "Hint: avoid hype without fundamentals."
+                )
+            },
+            {
+                "name": "📉 Market Correction",
+                "description": (
+                    "Markets drop sharply as traders take profits. "
+                    "Hint: avoid emotional selling; manage drawdowns."
+                )
+            },
+            {
+                "name": "🌍 Climate Regulation",
+                "description": (
+                    "Strict climate laws raise costs for polluters and boost renewables. "
+                    "Hint: rebalance toward transition winners."
+                )
+            },
+        ]
+        game["game_state"]["current_event"] = random.choice(events)
+
+    elif game["game_type"] == "crypto_crash":
+        indicators = {
+            "sentiment": random.randint(20, 80),
+            "volume": random.randint(30, 90),
+            "hype": random.randint(25, 95),
+            "price": round(random.uniform(8000, 15000), 2),
+            "price_change": round(random.uniform(-20, 20), 2),
+        }
+
+        # Sentiment
+        if indicators["sentiment"] < 35:
+            sentiment_text = "Fear dominates the market. Traders are pessimistic and selling pressure is rising."
+            sentiment_hint = "Reduce risk: more Stablecoin, less leverage, or wait for stability."
+        elif indicators["sentiment"] > 65:
+            sentiment_text = "Optimism is high. Traders believe prices will keep rising."
+            sentiment_hint = "Enjoy gains, but consider taking profits and avoid extreme leverage."
+        else:
+            sentiment_text = "Sentiment is mixed. Traders are uncertain and waiting for direction."
+            sentiment_hint = "Diversify across BTC/ETH and keep some Stablecoin."
+
+        # Volume
+        if indicators["volume"] > 75:
+            volume_text = "Trading volume is extremely high — big players may be moving money."
+            volume_hint = "High volume can mean breakout OR crash. Use lower leverage if unsure."
+        elif indicators["volume"] < 40:
+            volume_text = "Trading volume is weak — the market is thin and jumpy."
+            volume_hint = "Thin markets crash easily. Hold more Stablecoin and avoid leverage."
+        else:
+            volume_text = "Trading volume is normal — steady but cautious activity."
+            volume_hint = "Follow the trend, but keep protection (some Stablecoin)."
+
+        # Hype
+        if indicators["hype"] > 75:
+            hype_text = "Social media hype is exploding. Meme coins can spike — and crash — fast."
+            hype_hint = "Be careful with DOGE + leverage. That combo is highest risk."
+        elif indicators["hype"] < 40:
+            hype_text = "Hype is low. The market is quiet and attention is fading."
+            hype_hint = "Low hype means fewer pumps, but also less buying demand."
+        else:
+            hype_text = "Hype is moderate. Speculation exists, but it hasn't reached mania levels."
+            hype_hint = "Balanced conditions: focus on BTC/ETH and manage leverage."
+
+        market_story = f"{sentiment_text} {volume_text} {hype_text}"
+
+        game["game_state"]["indicators"] = indicators
+        game["game_state"]["market_story"] = market_story
+        game["game_state"]["indicator_notes"] = {
+            "sentiment": {"text": sentiment_text, "hint": sentiment_hint},
+            "volume": {"text": volume_text, "hint": volume_hint},
+            "hype": {"text": hype_text, "hint": hype_hint},
+        }
+
+    update_game_session(join_code, {
+        "current_round": game.get("current_round", 0) + 1,
+        "round_locked": False,
+        "round_timer_end": None,
+        "game_state": game["game_state"]
+    })
+
+
+# ============================================================================
 # EXCEL EXPORT
 # ============================================================================
 
@@ -997,16 +1137,15 @@ def export_game_results_to_excel(join_code: str):
     """
     import pandas as pd
     from io import BytesIO
-    
+
     game = get_game_session(join_code)
     if not game:
         return None
-    
-    # Create Excel writer
+
     output = BytesIO()
-    
+
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        
+
         # Sheet 1: Game Summary
         game_summary = {
             "Game Type": [game.get("game_type", "Unknown")],
@@ -1017,127 +1156,128 @@ def export_game_results_to_excel(join_code: str):
             "Current Round": [game.get("current_round", 0)],
             "Number of Teams": [len(game.get("teams", {}))]
         }
-        df_summary = pd.DataFrame(game_summary)
-        df_summary.to_excel(writer, sheet_name="Game Summary", index=False)
-        
+        pd.DataFrame(game_summary).to_excel(writer, sheet_name="Game Summary", index=False)
+
         # Sheet 2: Final Scores
         final_scores = []
         for team_name, team_data in game.get("teams", {}).items():
             if game["game_type"] == "build_country":
-                metrics = team_data.get("metrics", {})
-                score = (
-                    metrics.get("gdp", 100) * 0.3 +
-                    metrics.get("employment", 75) * 0.25 +
-                    (100 - metrics.get("inequality", 50)) * 0.25 +
-                    metrics.get("approval", 50) * 0.2
-                )
+                metrics = team_data.get("metrics", {}) or {}
+                fiscal = team_data.get("fiscal", {}) or {}
+
+                score = compute_build_country_score(team_data)
+
                 final_scores.append({
                     "Team": team_name,
                     "Final Score": round(score, 2),
-                    "GDP": round(metrics.get("gdp", 100), 2),
-                    "Employment": round(metrics.get("employment", 75), 2),
-                    "Inequality": round(metrics.get("inequality", 50), 2),
-                    "Approval": round(metrics.get("approval", 50), 2)
+                    "GDP": round(float(metrics.get("gdp", 100.0)), 2),
+                    "Employment": round(float(metrics.get("employment", 75.0)), 2),
+                    "Inequality": round(float(metrics.get("inequality", 50.0)), 2),
+                    "Approval": round(float(metrics.get("approval", 50.0)), 2),
+                    "Debt (%GDP)": round(float(metrics.get("debt", 0.0)), 2),
+                    "Deficit (%GDP)": round(float(fiscal.get("deficit_pct_gdp", 0.0)), 2),
+                    "Revenue (%GDP)": round(float(fiscal.get("revenue_pct_gdp", 0.0)), 2),
+                    "Spend (%GDP)": round(float(fiscal.get("total_spend_pct_gdp", 0.0)), 2),
                 })
-            
+
             elif game["game_type"] == "beat_market":
-                pv = team_data.get("portfolio_value", {})
-                returns = pv.get("returns", 0)
-                risk = pv.get("risk", 50)
+                pv = team_data.get("portfolio_value", {}) or {}
+                returns = float(pv.get("returns", 0))
+                risk = float(pv.get("risk", 50))
                 score = (returns / max(1.0, risk)) * 100.0 if risk > 0 else returns
                 final_scores.append({
                     "Team": team_name,
                     "Risk-Adj Score": round(score, 2),
-                    "Portfolio Value": round(pv.get("value", 1000000), 2),
+                    "Portfolio Value": round(float(pv.get("value", 1000000)), 2),
                     "Returns (%)": round(returns, 2),
                     "Risk": round(risk, 2)
                 })
-            
+
             elif game["game_type"] == "crypto_crash":
-                cp = team_data.get("crypto_portfolio", {})
+                cp = team_data.get("crypto_portfolio", {}) or {}
                 final_scores.append({
                     "Team": team_name,
-                    "Final Equity": round(cp.get("equity", 1000), 2),
-                    "Total Return (%)": round(cp.get("total_return_pct", 0), 2),
-                    "Risk Exposure": round(cp.get("risk_exposure", 0), 2),
+                    "Final Equity": round(float(cp.get("equity", 1000)), 2),
+                    "Total Return (%)": round(float(cp.get("total_return_pct", 0)), 2),
+                    "Risk Exposure": round(float(cp.get("risk_exposure", 0)), 2),
                     "Risk Label": cp.get("risk_label", "Low"),
                     "Leverage": cp.get("leverage", 1),
                     "Liquidations": cp.get("liquidations", 0)
                 })
-        
+
         if final_scores:
             df_final = pd.DataFrame(final_scores)
             df_final = df_final.sort_values(by=df_final.columns[1], ascending=False)
             df_final.insert(0, "Rank", range(1, len(df_final) + 1))
             df_final.to_excel(writer, sheet_name="Final Scores", index=False)
-        
+
         # Sheet 3-N: Round-by-Round Details for Each Team
         for team_name, team_data in game.get("teams", {}).items():
-            round_history = team_data.get("round_history", {})
-            
+            round_history = team_data.get("round_history", {}) or {}
             if not round_history:
                 continue
-            
-            round_data_list = []
-            
+
+            rows = []
             for round_num in sorted([int(r) for r in round_history.keys()]):
-                round_data = round_history.get(str(round_num), {})
-                
+                rd = round_history.get(str(round_num), {}) or {}
+
                 if game["game_type"] == "build_country":
-                    decisions = round_data.get("decisions", {})
-                    metrics = round_data.get("metrics", {})
-                    round_data_list.append({
+                    d = rd.get("decisions", {}) or {}
+                    m = rd.get("metrics", {}) or {}
+                    f = rd.get("fiscal", {}) or {}
+                    rows.append({
                         "Round": round_num,
-                        "Tax Rate (%)": decisions.get("tax_rate", 30),
-                        "Education (%)": decisions.get("education_spending", 25),
-                        "Infrastructure (%)": decisions.get("infrastructure_spending", 25),
-                        "Climate Policy": decisions.get("climate_policy", "Moderate"),
-                        "GDP": round(metrics.get("gdp", 100), 2),
-                        "Employment (%)": round(metrics.get("employment", 75), 2),
-                        "Inequality": round(metrics.get("inequality", 50), 2),
-                        "Approval (%)": round(metrics.get("approval", 50), 2),
-                        "Score": round(round_data.get("score", 0), 2)
+                        "Tax Rate (slider)": d.get("tax_rate", 30),
+                        "Education (slider)": d.get("education_spending", 25),
+                        "Infrastructure (slider)": d.get("infrastructure_spending", 25),
+                        "Climate Policy": d.get("climate_policy", "Moderate"),
+                        "GDP": round(float(m.get("gdp", 100.0)), 2),
+                        "Employment": round(float(m.get("employment", 75.0)), 2),
+                        "Inequality": round(float(m.get("inequality", 50.0)), 2),
+                        "Approval": round(float(m.get("approval", 50.0)), 2),
+                        "Debt (%GDP)": round(float(m.get("debt", 0.0)), 2),
+                        "Deficit (%GDP)": round(float(f.get("deficit_pct_gdp", 0.0)), 2),
+                        "Score": round(float(rd.get("score", 0.0)), 2),
                     })
-                
+
                 elif game["game_type"] == "beat_market":
-                    decisions = round_data.get("decisions", {})
-                    pv = round_data.get("portfolio_value", {})
-                    round_data_list.append({
+                    d = rd.get("decisions", {}) or {}
+                    pv = rd.get("portfolio_value", {}) or {}
+                    rows.append({
                         "Round": round_num,
-                        "Cash (%)": decisions.get("cash_pct", 25),
-                        "Shares (%)": decisions.get("shares_pct", 25),
-                        "Crypto (%)": decisions.get("crypto_pct", 25),
-                        "Bonds (%)": decisions.get("bonds_pct", 25),
-                        "Portfolio Value": round(pv.get("value", 1000000), 2),
-                        "Returns (%)": round(pv.get("returns", 0), 2),
-                        "Risk": round(pv.get("risk", 50), 2),
-                        "Risk-Adj Score": round(round_data.get("score", 0), 2)
+                        "Cash (%)": d.get("cash_pct", 25),
+                        "Shares (%)": d.get("shares_pct", 25),
+                        "Crypto (%)": d.get("crypto_pct", 25),
+                        "Bonds (%)": d.get("bonds_pct", 25),
+                        "Portfolio Value": round(float(pv.get("value", 1000000)), 2),
+                        "Returns (%)": round(float(pv.get("returns", 0.0)), 2),
+                        "Risk": round(float(pv.get("risk", 50.0)), 2),
+                        "Risk-Adj Score": round(float(rd.get("score", 0.0)), 2)
                     })
-                
+
                 elif game["game_type"] == "crypto_crash":
-                    decisions = round_data.get("decisions", {})
-                    alloc = decisions.get("allocations", {})
-                    cp = round_data.get("crypto_portfolio", {})
-                    round_data_list.append({
+                    d = rd.get("decisions", {}) or {}
+                    alloc = d.get("allocations", {}) or {}
+                    cp = rd.get("crypto_portfolio", {}) or {}
+                    rows.append({
                         "Round": round_num,
                         "BTC (%)": alloc.get("btc", 40),
                         "ETH (%)": alloc.get("eth", 30),
                         "DOGE (%)": alloc.get("doge", 20),
                         "Stable (%)": alloc.get("stable", 10),
-                        "Leverage": decisions.get("leverage", 1),
-                        "Equity": round(cp.get("equity", 1000), 2),
-                        "Round Return (%)": round(cp.get("last_return_pct", 0), 2),
+                        "Leverage": d.get("leverage", 1),
+                        "Equity": round(float(cp.get("equity", 1000.0)), 2),
+                        "Round Return (%)": round(float(cp.get("last_return_pct", 0.0)), 2),
                         "Risk Label": cp.get("risk_label", "Low"),
-                        "Liquidations": cp.get("liquidations", 0)
+                        "Liquidations": cp.get("liquidations", 0),
                     })
-            
-            if round_data_list:
-                df_team = pd.DataFrame(round_data_list)
-                # Sanitize sheet name (Excel limit: 31 chars, no special chars)
+
+            if rows:
+                df_team = pd.DataFrame(rows)
                 sheet_name = team_name[:28] + "..." if len(team_name) > 31 else team_name
                 sheet_name = "".join(c if c.isalnum() or c in (' ', '_') else '_' for c in sheet_name)
                 df_team.to_excel(writer, sheet_name=sheet_name, index=False)
-    
+
     output.seek(0)
     return output
 
